@@ -151,7 +151,11 @@ try {
 
     $targetExists = Test-Path -LiteralPath $targetAbs
     if ($targetExists -and -not $Force) {
-        throw (New-NightmixError "target already exists: $targetAbs (use -Force to overwrite)." 1)
+        # A real run refuses to overwrite; a -DryRun still previews the command.
+        if (-not $DryRun) {
+            throw (New-NightmixError "target already exists: $targetAbs (use -Force to overwrite)." 1)
+        }
+        Add-Note "Note: target exists; a real run would need -Force to overwrite it."
     }
 
     # --- 2. Probe source ---

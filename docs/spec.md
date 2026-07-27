@@ -88,7 +88,7 @@ On every FS-modifying script. Prints the human-readable plan and the **complete,
 
 ### 3.4 Overwrite protection
 
-Existing output → fail unless `-Force`. Pass `-y` to ffmpeg only after the script decides overwrite is safe, never unconditionally.
+Existing output → fail unless `-Force`. Pass `-y` to ffmpeg only after the script decides overwrite is safe, never unconditionally. `-DryRun` still previews the command when the output exists (it writes nothing); the refusal applies only to real runs.
 
 ### 3.5 Error handling
 
