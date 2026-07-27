@@ -355,6 +355,7 @@ Decode-cost notes:
 [<input>:a:<idx>]
   aformat=channel_layouts=stereo,
   dialoguenhance=original=1:enhance=1:voice=2,
+  aformat=channel_layouts=stereo,
   acompressor=threshold=-21dB:ratio=4:attack=20:release=250:makeup=2,
   loudnorm=I=-18:TP=-1.5:LRA=11,
   alimiter=limit=0.95:level=disabled,
@@ -365,11 +366,12 @@ Decode-cost notes:
 Order matters — do not reorder:
 
 1. `aformat=...stereo` **first** — `dialoguenhance` accepts stereo only, errors on 5.1.
-2. `dialoguenhance` — boosts the centre-panned (dialogue) component. Needs ffmpeg 6.0+.
-3. `acompressor` — the actual DRC. `makeup=2` is a linear multiplier (≈ +6 dB, not a dB value); without it compression only makes things quieter.
-4. `loudnorm` — average-loudness normaliser (not a compressor — hence after `acompressor`). Single-pass dynamic mode. Too loud overall → lower `I=` to `-20`, not the limiter.
-5. `alimiter` — hard peak ceiling. `level=disabled` matters: it otherwise auto-levels and partially undoes `loudnorm`.
-6. `aresample=48000` — **required**: `loudnorm` dynamic mode outputs 192 kHz internally, which otherwise propagates to the encoder.
+2. `dialoguenhance` — boosts the centre-panned (dialogue) component. Needs ffmpeg 6.0+. **Emits 3.0**: it splits the enhanced dialogue out into a centre channel.
+3. `aformat=...stereo` **again** — fold that centre back into L/R so the output is true stereo (the target hardware is stereo). Without this second downmix the output is 3.0, which defeats the stereo goal and may not play on weak hardware. The rest of the chain then operates on the final stereo signal.
+4. `acompressor` — the actual DRC. `makeup=2` is a linear multiplier (≈ +6 dB, not a dB value); without it compression only makes things quieter.
+5. `loudnorm` — average-loudness normaliser (not a compressor — hence after `acompressor`). Single-pass dynamic mode. Too loud overall → lower `I=` to `-20`, not the limiter.
+6. `alimiter` — hard peak ceiling. `level=disabled` matters: it otherwise auto-levels and partially undoes `loudnorm`.
+7. `aresample=48000` — **required**: `loudnorm` dynamic mode outputs 192 kHz internally, which otherwise propagates to the encoder.
 
 Encoder: `-c:a aac -b:a 192k` per track.
 
@@ -427,7 +429,7 @@ Subs:    0  rus subrip    -> mov_text
 ffmpeg -hide_banner
   -i "video.mkv"
   -i "commentary.mka"
-  -filter_complex "[0:a:0]aformat=channel_layouts=stereo,dialoguenhance=original=1:enhance=1:voice=2,acompressor=threshold=-21dB:ratio=4:attack=20:release=250:makeup=2,loudnorm=I=-18:TP=-1.5:LRA=11,alimiter=limit=0.95:level=disabled,aresample=48000[aout0];[1:a:0]aformat=channel_layouts=stereo,dialoguenhance=original=1:enhance=1:voice=2,acompressor=threshold=-21dB:ratio=4:attack=20:release=250:makeup=2,loudnorm=I=-18:TP=-1.5:LRA=11,alimiter=limit=0.95:level=disabled,aresample=48000[aout1]"
+  -filter_complex "[0:a:0]aformat=channel_layouts=stereo,dialoguenhance=original=1:enhance=1:voice=2,aformat=channel_layouts=stereo,acompressor=threshold=-21dB:ratio=4:attack=20:release=250:makeup=2,loudnorm=I=-18:TP=-1.5:LRA=11,alimiter=limit=0.95:level=disabled,aresample=48000[aout0];[1:a:0]aformat=channel_layouts=stereo,dialoguenhance=original=1:enhance=1:voice=2,aformat=channel_layouts=stereo,acompressor=threshold=-21dB:ratio=4:attack=20:release=250:makeup=2,loudnorm=I=-18:TP=-1.5:LRA=11,alimiter=limit=0.95:level=disabled,aresample=48000[aout1]"
   -map 0:v:0 -map "[aout0]" -map "[aout1]" -map 0:s:0
   -vf "scale='min(iw,1920)':'min(ih,1080)':force_original_aspect_ratio=decrease:force_divisible_by=2"
   -c:v libx264 -crf 22 -preset veryfast -tune fastdecode

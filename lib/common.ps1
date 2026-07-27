@@ -39,6 +39,7 @@ $AudioBitrate    = '192k'
 $AudioSampleRate = 48000
 
 # Filter chain (see 7.4)
+$StereoDownmix   = 'aformat=channel_layouts=stereo'
 $DialogueEnhance = 'dialoguenhance=original=1:enhance=1:voice=2'
 $Compressor      = 'acompressor=threshold=-21dB:ratio=4:attack=20:release=250:makeup=2'
 $Loudnorm        = 'loudnorm=I=-18:TP=-1.5:LRA=11'
@@ -303,6 +304,12 @@ function Invoke-FFmpeg {
     # argument (correct quoting) rather than reassembling a command string.
     # 2>&1 merges ffmpeg's stderr (its live progress) into the pipeline so we
     # can echo it live and keep the last lines for a failure message.
+    #
+    # ffmpeg writes normal progress to stderr. Under $ErrorActionPreference =
+    # 'Stop' (set by the entry points), 2>&1 would wrap the first stderr line in
+    # a terminating NativeCommandError and abort. Force 'Continue' locally so
+    # stderr is just data; real failure is detected via $LASTEXITCODE below.
+    $ErrorActionPreference = 'Continue'
     $tail = New-Object System.Collections.Generic.Queue[string]
     & $FFmpegPath @Arguments 2>&1 | ForEach-Object {
         $line = if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.ToString() } else { "$_" }
@@ -321,6 +328,8 @@ function Invoke-FFmpeg {
 # 4.3 Consistent plan-block formatting (used by -DryRun and the real-run
 # pre-flight summary).
 function Write-Plan {
-    param([Parameter(Mandatory)][string[]]$Lines)
+    # AllowEmptyString so blank separator lines in a plan are permitted; a
+    # Mandatory [string[]] otherwise rejects any array containing an empty string.
+    param([Parameter(Mandatory)][AllowEmptyString()][string[]]$Lines)
     foreach ($line in $Lines) { Write-Output $line }
 }
