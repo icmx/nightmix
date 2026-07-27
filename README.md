@@ -1,1 +1,66 @@
 # nightmix
+
+A small set of PowerShell scripts that prepare video files for playback on weak external hardware. It fixes two things: it re-encodes video to a stream that is **cheap to decode** (so it stops stuttering and dropping frames), and it runs the audio through a fixed filter chain that **lifts dialogue and tames dynamics** (so quiet speech is audible without loud effects clipping a small speaker).
+
+## Requirements
+
+- **Windows**, PowerShell 5.1+
+- **ffmpeg 6.0+** (the `dialoguenhance` filter needs 6.0). Easiest via [scoop](https://scoop.sh): `scoop install ffmpeg`.
+
+## Install
+
+Clone the repo anywhere, then run once:
+
+```powershell
+.\install.ps1
+```
+
+This adds `bin\` to your user `PATH` (no admin needed), checks your execution policy, and verifies ffmpeg. Open a **new** PowerShell window afterwards so it picks up the new `PATH`. Re-run `install.ps1` after moving the repo; `.\install.ps1 -Uninstall` removes it.
+
+## Usage
+
+`cd` to wherever your video is and call the scripts by name. Output lands in the current directory.
+
+```powershell
+cd "E:\Video\Sample"
+
+# See the streams; copy the indices you want.
+nightmix-probe.ps1 "video.mkv"
+
+# Convert: audio track 0, subtitle track 1.
+nightmix-convert.ps1 -Audio "0" -Subtitles "1" "video.mkv"
+```
+
+`nightmix-probe.ps1` prints a compact, scannable report and flags anything worth knowing (image-based subtitles, interlacing, 10-bit/HEVC sources that are likely to stutter). Its per-type, 0-based indices paste straight into `nightmix-convert.ps1`.
+
+### Scripts
+
+| Command | What it does |
+| --- | --- |
+| `nightmix-probe.ps1 <file>` | Compact, read-only summary of a file's streams. |
+| `nightmix-convert.ps1 [...] <source> [target]` | The main conversion. |
+| `nightmix-dvdmux.ps1 [...] <VIDEO_TS folder> [result]` | Muxes a ripped DVD's main title into one MKV (run `convert` on the result afterwards). |
+
+### Common options
+
+- **Audio is mandatory** — there is no safe default. Pass `-Audio "0,2"` with the track indices you want, `-ExtraAudio "commentary.mka"` for an external file, or `-Audio none` for a silent output.
+- `-Subtitles` defaults to all internal text subtitles; pass indices, or `none`. Image-based subtitles (PGS/VOBSUB) can't go into MP4 and are skipped with a warning.
+- `-Deinterlace` applies deinterlacing (never automatic — `probe` tells you when).
+- `-DryRun` prints the plan and the full, copy-pasteable ffmpeg command without running anything. This is the best way to see exactly what will happen.
+- `-Force` allows overwriting an existing output.
+
+## Still dropping frames?
+
+The default `standard` profile targets 1080p. If a file still stutters after conversion, escalate to the lighter profile:
+
+```powershell
+nightmix-convert.ps1 -Audio "0" -VideoProfile light "video.mkv"
+```
+
+`light` drops to 720p and tightens the bitrate and level caps further.
+
+## Tuning
+
+Every tunable value — video profiles, CRF, bitrate caps, the audio filter chain, AAC bitrate — lives in [`lib/common.ps1`](lib/common.ps1) as commented constants. Nothing tunable is hardcoded in the scripts, so adjust it there.
+
+See [`docs/spec.md`](docs/spec.md) for the full design and rationale.
