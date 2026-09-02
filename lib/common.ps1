@@ -39,10 +39,15 @@ $AudioBitrate    = '192k'
 $AudioSampleRate = 48000
 
 # Filter chain (see 7.4)
+#
+# Alternative options for compressor/loudnorm
+# $Compressor      = 'acompressor=threshold=-28dB:ratio=6:attack=15:release=250:makeup=6'
+# $Loudnorm        = 'loudnorm=I=-45:TP=-2:LRA=6'
+#
 $StereoDownmix   = 'aformat=channel_layouts=stereo'
 $DialogueEnhance = 'dialoguenhance=original=1:enhance=1:voice=2'
-$Compressor      = 'acompressor=threshold=-21dB:ratio=4:attack=20:release=250:makeup=2'
-$Loudnorm        = 'loudnorm=I=-18:TP=-1.5:LRA=11'
+$Compressor      = 'acompressor=threshold=-28dB:ratio=6:attack=15:release=250:makeup=4'
+$Loudnorm        = 'loudnorm=I=-38:TP=-2:LRA=6'
 $Limiter         = 'alimiter=limit=0.95:level=disabled'
 
 # Container
