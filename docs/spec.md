@@ -128,6 +128,7 @@ $MovFlags      = '+faststart'
 
 # Misc
 $NoneKeyword   = 'none'
+$AllKeyword    = 'all'
 ```
 
 ### 4.2 Codec classification
@@ -257,13 +258,13 @@ nightmix-convert.ps1 [-DryRun] [-Force] [-VideoProfile <string>]
 | `-VideoProfile` | string | `standard` | Key into `$VideoProfiles` (`standard`/`light`). |
 | `-Audio` | string | **mandatory — §7.1.2** | 0-based audio indices, e.g. `"0,2"`, or `"none"`. |
 | `-ExtraAudio` | string[] | none | External audio file paths. |
-| `-Subtitles` | string | all internal text subs | 0-based subtitle indices, or `"none"`. |
+| `-Subtitles` | string | `none` | 0-based subtitle indices, `"all"` for every internal text subtitle, or `"none"`. |
 | `-ExtraSubtitles` | string[] | none | External subtitle file paths. |
 | `-Deinterlace` | switch | off | Apply `$DeinterlaceFilter`. Never automatic. |
 | `-Source` | string | — | Positional 0, mandatory. |
 | `-Target` | string | — | Positional 1, mandatory. Output `.mp4` path. |
 
-**7.1.1 Parsing `-Audio`/`-Subtitles`.** Whitespace around commas is fine (`"0, 2"` == `"0,2"`). `"none"` (case-insensitive, `$NoneKeyword`) means no streams of that type — must be the whole value, can't combine with indices; `-Audio "none"` + `-ExtraAudio` is contradictory → reject. Reject `-1` explicitly, pointing at `none` (a leading dash is ambiguous to the parser).
+**7.1.1 Parsing `-Audio`/`-Subtitles`.** Whitespace around commas is fine (`"0, 2"` == `"0,2"`). `"none"` (case-insensitive, `$NoneKeyword`) means no streams of that type — must be the whole value, can't combine with indices; `-Audio "none"` + `-ExtraAudio` is contradictory → reject. `"all"` (case-insensitive, `$AllKeyword`) is accepted for `-Subtitles` only and selects every internal **text** subtitle; like `none` it must be the whole value. `-Audio` has no bulk keyword — picking audio is exactly the choice that must be explicit. Reject `-1` explicitly, pointing at `none` (a leading dash is ambiguous to the parser).
 
 **7.1.2 Audio is mandatory.** No default. Neither `-Audio` nor `-ExtraAudio` → fail:
 
@@ -273,7 +274,7 @@ an external file, or -Audio none for a silent output.
 Run nightmix-probe.ps1 "video.mkv" to see the available tracks.
 ```
 
-Picking audio is the one choice that can't be guessed (files carry multiple dubs + commentary). Subtitles keep their default (all internal text subs) — cheap and optional at playback.
+Picking audio is the one choice that can't be guessed (files carry multiple dubs + commentary). Subtitles are opt-in: omitting `-Subtitles` selects none. Pass `-Subtitles all` for every internal text subtitle, or explicit indices.
 
 ### 7.2 Order of operations
 
@@ -373,7 +374,7 @@ MP4 carries text subs only:
 - Codec in `$ImageSubtitleCodecs` or unrecognised → **skip + warn** (`Skipping subtitle 3 (hdmv_pgs_subtitle): image-based, not supported in MP4.`) even if explicitly requested. Don't fail — attempting the copy is what crashes the mux.
 - `ass`/`ssa` selected → warn once that styling/positioning is lost in `mov_text`.
 
-External subs: each `-ExtraSubtitles` file is an extra input, mapped `:s:0` → `mov_text`. Reject image-based external subs (`.sup`, `.idx`/`.sub`) at validation. Metadata per §7.4.1. Output order: internal in index order, then externals. `-c:s mov_text`. `-Subtitles none` → `-sn`. Zero subs left after skipping is fine — omit `-c:s`, don't fail.
+External subs: each `-ExtraSubtitles` file is an extra input, mapped `:s:0` → `mov_text`. Reject image-based external subs (`.sup`, `.idx`/`.sub`) at validation. Metadata per §7.4.1. Output order: internal in index order, then externals. `-c:s mov_text`. `-Subtitles none` (and omitting `-Subtitles`) → `-sn`. `-Subtitles all` selects every internal text subtitle; image-based ones are not eligible and are excluded without a per-track warning, since the request was a bulk one. Zero subs left after skipping is fine — omit `-c:s`, don't fail.
 
 ### 7.6 Input numbering
 
@@ -489,6 +490,7 @@ Short: what it does (both problems), prereqs (Windows, PS 5.1+, ffmpeg 6.0+ via 
 - No `-Audio`/`-ExtraAudio` → §7.1.2 failure, nothing encoded. `-Audio -1` → rejected, points at `none`.
 - 720p not upscaled to 1080p; 4K downscaled with aspect kept; 23.976 stays, 60 → 30; output within `maxrate` over any 2 s; 10-bit HEVC → 8-bit H.264; `-VideoProfile light` → 720p/level 3.1.
 - PGS index → warn + skip, not crash. `-Audio none` → video-only MP4.
+- Omitting `-Subtitles` yields `-sn` (no subtitle streams); `-Subtitles all` includes every internal text subtitle and excludes image-based ones.
 - Internal + external audio both get the full chain; tags survive, absent tags emit no flag; tagless external gets filename-stem title; output audio is 48 kHz not 192 kHz.
 - A source whose path contains Cyrillic characters and spaces converts successfully.
 - dvdmux `-DryRun` picks the main title and lists VOBs in order.

@@ -47,7 +47,7 @@ nightmix-convert.ps1 -Audio "0" -Subtitles "1" "video.mkv" "video.mp4"
 ### Common options
 
 - **Audio is mandatory** — there is no safe default. Pass `-Audio "0,2"` with the track indices you want, `-ExtraAudio "commentary.mka"` for an external file, or `-Audio none` for a silent output.
-- `-Subtitles` defaults to all internal text subtitles; pass indices, or `none`. Image-based subtitles (PGS/VOBSUB) can't go into MP4 and are skipped with a warning.
+- `-Subtitles` is opt-in: omit it for no subtitles, pass `all` for every internal text subtitle, or explicit indices. Image-based subtitles (PGS/VOBSUB) can't go into MP4; explicitly requested ones are skipped with a warning.
 - `-Deinterlace` applies deinterlacing (never automatic — `probe` tells you when).
 - `-DryRun` prints the plan and the full, copy-pasteable ffmpeg command without running anything. This is the best way to see exactly what will happen.
 - `-Force` allows overwriting an existing output.

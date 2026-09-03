@@ -24,7 +24,8 @@ Comma-separated 0-based audio indices (e.g. "0,2"), or "none".
 .PARAMETER ExtraAudio
 Paths to external audio files, each added as one track.
 .PARAMETER Subtitles
-Comma-separated 0-based subtitle indices, or "none". Default: all internal text subs.
+Comma-separated 0-based subtitle indices, "all" for every internal text subtitle,
+or "none". Default: none (subtitles are opt-in).
 .PARAMETER ExtraSubtitles
 Paths to external subtitle files (text-based only).
 .PARAMETER Deinterlace
@@ -60,13 +61,22 @@ $ErrorActionPreference = 'Stop'
 # Helpers
 # ---------------------------------------------------------------------------
 
-# Parse a "-Audio"/"-Subtitles" selector into @{ None = bool; Indices = int[] }.
+# Parse a "-Audio"/"-Subtitles" selector into
+# @{ None = bool; All = bool; Indices = int[] }.
+# 'all' is only accepted with -AllowAll (subtitles); audio must be chosen
+# explicitly, so it has no bulk keyword.
 function ConvertFrom-IndexSelector {
-    param([Parameter(Mandatory)][string]$Value, [Parameter(Mandatory)][string]$Option)
+    param(
+        [Parameter(Mandatory)][string]$Value,
+        [Parameter(Mandatory)][string]$Option,
+        [switch]$AllowAll
+    )
 
     $trimmed = $Value.Trim()
-    if ($trimmed -ieq $NoneKeyword) { return @{ None = $true; Indices = @() } }
+    if ($trimmed -ieq $NoneKeyword) { return @{ None = $true; All = $false; Indices = @() } }
+    if ($AllowAll -and $trimmed -ieq $AllKeyword) { return @{ None = $false; All = $true; Indices = @() } }
 
+    $keywords = if ($AllowAll) { "'$AllKeyword'/'$NoneKeyword'" } else { "'$NoneKeyword'" }
     $parts = @($trimmed -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
     $indices = @()
     foreach ($p in $parts) {
@@ -74,11 +84,11 @@ function ConvertFrom-IndexSelector {
             throw (New-NightmixError "$Option -1 is not valid. Use '$Option $NoneKeyword' for no streams of this type." 1)
         }
         if ($p -notmatch '^\d+$') {
-            throw (New-NightmixError "$Option has an invalid index '$p'. Use comma-separated 0-based numbers, or '$NoneKeyword'." 1)
+            throw (New-NightmixError "$Option has an invalid index '$p'. Use comma-separated 0-based numbers, or $keywords." 1)
         }
         $indices += [int]$p
     }
-    return @{ None = $false; Indices = @($indices | Sort-Object -Unique) }
+    return @{ None = $false; All = $false; Indices = @($indices | Sort-Object -Unique) }
 }
 
 # Numeric frame rate from an "num/den" fraction; $null if unparseable.
@@ -130,15 +140,17 @@ try {
             "Run nightmix-probe.ps1 `"$Source`" to see the available tracks.") 1)
     }
 
-    $audioSel = @{ None = $false; Indices = @() }
+    $audioSel = @{ None = $false; All = $false; Indices = @() }
     if ($audioProvided) { $audioSel = ConvertFrom-IndexSelector -Value $Audio -Option '-Audio' }
     if ($audioSel.None -and $hasExtraAudio) {
         throw (New-NightmixError "-Audio $NoneKeyword cannot be combined with -ExtraAudio." 1)
     }
 
     $subsProvided = $PSBoundParameters.ContainsKey('Subtitles')
-    $subsSel = @{ None = $false; Indices = @() }
-    if ($subsProvided) { $subsSel = ConvertFrom-IndexSelector -Value $Subtitles -Option '-Subtitles' }
+    # Subtitles are opt-in: omitting -Subtitles means none. Use -Subtitles all
+    # for every internal text subtitle.
+    $subsSel = @{ None = $true; All = $false; Indices = @() }
+    if ($subsProvided) { $subsSel = ConvertFrom-IndexSelector -Value $Subtitles -Option '-Subtitles' -AllowAll }
 
     # --- 1b. Resolve source and target paths ---
     $sourceAbs = Resolve-InputPath $Source
@@ -176,7 +188,7 @@ try {
     }
 
     # --- 2b. Validate internal subtitle indices (explicit only) ---
-    if ($subsProvided -and -not $subsSel.None) {
+    if ($subsProvided -and -not $subsSel.None -and -not $subsSel.All) {
         foreach ($idx in $subsSel.Indices) {
             if ($idx -ge $srcSubs.Count) {
                 $hi = [math]::Max($srcSubs.Count - 1, 0)
@@ -269,19 +281,28 @@ try {
     $subPlan = @()
     $assWarned = $false
     if (-not $subsSel.None) {
-        if ($subsProvided) { $subIdxList = $subsSel.Indices }
-        else { $subIdxList = @(0..($srcSubs.Count - 1) | Where-Object { $_ -lt $srcSubs.Count }) }
-        if ($srcSubs.Count -eq 0) { $subIdxList = @() }
+        if ($subsSel.All) {
+            # 'all' means every internal TEXT subtitle. Image-based ones can
+            # never go into MP4, so they are simply not eligible here — no
+            # per-track warning, since the user asked for a bulk selection.
+            $subIdxList = @()
+            for ($i = 0; $i -lt $srcSubs.Count; $i++) {
+                $c = "$(Get-JsonProperty -Object $srcSubs[$i] -Name 'codec_name')"
+                if ($TextSubtitleCodecs -contains $c) { $subIdxList += $i }
+            }
+        } else {
+            $subIdxList = $subsSel.Indices
+        }
 
         foreach ($idx in $subIdxList) {
             $s = $srcSubs[$idx]
             $codec = "$(Get-JsonProperty -Object $s -Name 'codec_name')"
             $isImage = -not ($TextSubtitleCodecs -contains $codec)
             if ($isImage) {
-                if ($subsProvided) {
-                    Add-Note "Skipping subtitle $idx ($codec): image-based, not supported in MP4."
-                    $subPlan += ('{0}  {1} {2}' -f $idx, (Get-StreamLanguage $s), $codec).Trim() + '  -> SKIPPED (image-based)'
-                }
+                # Only reachable for explicitly requested indices; 'all' filtered
+                # image codecs out above.
+                Add-Note "Skipping subtitle $idx ($codec): image-based, not supported in MP4."
+                $subPlan += ('{0}  {1} {2}' -f $idx, (Get-StreamLanguage $s), $codec).Trim() + '  -> SKIPPED (image-based)'
                 continue
             }
             if (($codec -eq 'ass' -or $codec -eq 'ssa') -and -not $assWarned) {

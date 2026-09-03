@@ -56,6 +56,7 @@ $MovFlags      = '+faststart'
 
 # Misc
 $NoneKeyword   = 'none'
+$AllKeyword    = 'all'
 
 # ---------------------------------------------------------------------------
 # 4.2 Codec classification
