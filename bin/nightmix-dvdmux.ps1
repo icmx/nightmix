@@ -19,19 +19,19 @@ Allow overwriting an existing result file.
 .PARAMETER Directory
 Positional 0, mandatory. The folder containing VIDEO_TS, or the VIDEO_TS folder itself.
 .PARAMETER Result
-Positional 1. Output .mkv; derived from the folder name when omitted.
+Positional 1, mandatory. Output .mkv path.
 
 .EXAMPLE
-nightmix-dvdmux.ps1 "D:\rips\SomeDisc"
+nightmix-dvdmux.ps1 "D:\rips\SomeDisc" "disc.mkv"
 .EXAMPLE
-nightmix-dvdmux.ps1 -DryRun "D:\rips\SomeDisc\VIDEO_TS"
+nightmix-dvdmux.ps1 -DryRun "D:\rips\SomeDisc\VIDEO_TS" "disc.mkv"
 #>
 [CmdletBinding()]
 param(
     [switch]$DryRun,
     [switch]$Force,
     [Parameter(Mandatory, Position = 0)][string]$Directory,
-    [Parameter(Position = 1)][string]$Result
+    [Parameter(Mandatory, Position = 1)][string]$Result
 )
 
 $ErrorActionPreference = 'Stop'
@@ -54,23 +54,16 @@ try {
 
     if ((Split-Path $dirAbs -Leaf) -ieq 'VIDEO_TS') {
         $vtsDir = $dirAbs
-        $nameSource = Split-Path $dirAbs -Parent   # name the MKV after the disc folder, not "VIDEO_TS"
     } elseif (Test-Path -LiteralPath (Join-Path $dirAbs 'VIDEO_TS') -PathType Container) {
         $vtsDir = (Join-Path $dirAbs 'VIDEO_TS')
-        $nameSource = $dirAbs
     } else {
         # No VIDEO_TS subfolder and not named VIDEO_TS — accept a folder that
         # holds the VOBs directly; fail later if there are none.
         $vtsDir = $dirAbs
-        $nameSource = $dirAbs
     }
 
     # --- Resolve the result path ---
-    if ($Result) {
-        $targetAbs = Resolve-OutputPath $Result
-    } else {
-        $targetAbs = Resolve-OutputPath (Get-SafeName -InputPath $nameSource -Extension '.mkv')
-    }
+    $targetAbs = Resolve-OutputPath $Result
 
     $targetExists = Test-Path -LiteralPath $targetAbs
     $existsNeedsForce = $false

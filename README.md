@@ -31,7 +31,7 @@ cd "E:\Video\Sample"
 nightmix-probe.ps1 "video.mkv"
 
 # Convert: audio track 0, subtitle track 1.
-nightmix-convert.ps1 -Audio "0" -Subtitles "1" "video.mkv"
+nightmix-convert.ps1 -Audio "0" -Subtitles "1" "video.mkv" "video.mp4"
 ```
 
 `nightmix-probe.ps1` prints a compact, scannable report and flags anything worth knowing (image-based subtitles, interlacing, 10-bit/HEVC sources that are likely to stutter). Its per-type, 0-based indices paste straight into `nightmix-convert.ps1`.
@@ -41,8 +41,8 @@ nightmix-convert.ps1 -Audio "0" -Subtitles "1" "video.mkv"
 | Command | What it does |
 | --- | --- |
 | `nightmix-probe.ps1 <file>` | Compact, read-only summary of a file's streams. |
-| `nightmix-convert.ps1 [...] <source> [target]` | The main conversion. |
-| `nightmix-dvdmux.ps1 [...] <VIDEO_TS folder> [result]` | Muxes a ripped DVD's main title into one MKV (run `convert` on the result afterwards). |
+| `nightmix-convert.ps1 [...] <source> <target>` | The main conversion. |
+| `nightmix-dvdmux.ps1 [...] <VIDEO_TS folder> <result>` | Muxes a ripped DVD's main title into one MKV (run `convert` on the result afterwards). |
 
 ### Common options
 
@@ -57,7 +57,7 @@ nightmix-convert.ps1 -Audio "0" -Subtitles "1" "video.mkv"
 The default `standard` profile targets 1080p. If a file still stutters after conversion, escalate to the lighter profile:
 
 ```powershell
-nightmix-convert.ps1 -Audio "0" -VideoProfile light "video.mkv"
+nightmix-convert.ps1 -Audio "0" -VideoProfile light "video.mkv" "video.mp4"
 ```
 
 `light` drops to 720p and tightens the bitrate and level caps further.

@@ -3,9 +3,9 @@
 # Shared configuration constants and helper functions for the nightmix toolkit.
 # Dot-sourced by the bin/ entry points; never run directly.
 #
-# See docs/spec-lean.md sections 4, 7.4, 8.4 and 9.
+# See docs/spec.md sections 4, 7.4, 8.4 and 9.
 
-# Cyrillic track titles from ffprobe and Cyrillic output filenames need UTF-8.
+# Cyrillic track titles from ffprobe and Cyrillic paths need UTF-8.
 try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
 
 # ---------------------------------------------------------------------------
@@ -55,7 +55,6 @@ $SubtitleCodec = 'mov_text'
 $MovFlags      = '+faststart'
 
 # Misc
-$NameMaxLength = 36
 $NoneKeyword   = 'none'
 
 # ---------------------------------------------------------------------------
@@ -66,7 +65,7 @@ $TextSubtitleCodecs  = @('subrip','srt','ass','ssa','mov_text','webvtt','text')
 $ImageSubtitleCodecs = @('hdmv_pgs_subtitle','dvd_subtitle','dvb_subtitle','xsub')
 
 # ---------------------------------------------------------------------------
-# Errors (3.5)
+# Errors (3.4)
 # ---------------------------------------------------------------------------
 
 # We avoid a custom [class] because a type literal in a dot-sourced-only helper
@@ -231,22 +230,6 @@ function Get-ChannelLayoutLabel {
     }
 }
 
-# 3.2 Output filename derivation.
-function Get-SafeName {
-    param(
-        [Parameter(Mandatory)][string]$InputPath,
-        [Parameter(Mandatory)][string]$Extension
-    )
-    $stem = [System.IO.Path]::GetFileNameWithoutExtension($InputPath)
-    $name = $stem.ToLowerInvariant()
-    $name = $name -replace '[^\p{L}\p{Nd}]+', '-'
-    $name = $name.Trim('-')
-    if ($name.Length -gt $NameMaxLength) { $name = $name.Substring(0, $NameMaxLength) }
-    $name = $name.Trim('-')
-    if ([string]::IsNullOrEmpty($name)) { $name = 'output' }
-    $ext = $Extension.TrimStart('.')
-    return "$name.$ext"
-}
 
 # 8.4 Path resolution. Inputs must exist; use LiteralPath so spaces and
 # Cyrillic are safe. Returns a full absolute path for ffmpeg.

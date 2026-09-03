@@ -32,12 +32,12 @@ Apply the deinterlace filter. Never automatic.
 .PARAMETER Source
 Positional 0, mandatory. Input file.
 .PARAMETER Target
-Positional 1. Output .mp4; derived from the source name when omitted.
+Positional 1, mandatory. Output .mp4 path.
 
 .EXAMPLE
-nightmix-convert.ps1 -Audio "0" -Subtitles "1" "video.mkv"
+nightmix-convert.ps1 -Audio "0" -Subtitles "1" "video.mkv" "video.mp4"
 .EXAMPLE
-nightmix-convert.ps1 -DryRun -Audio "0" -ExtraAudio "commentary.mka" "video.mkv"
+nightmix-convert.ps1 -DryRun -Audio "0" -ExtraAudio "commentary.mka" "video.mkv" "video.mp4"
 #>
 [CmdletBinding()]
 param(
@@ -50,7 +50,7 @@ param(
     [string[]]$ExtraSubtitles,
     [switch]$Deinterlace,
     [Parameter(Mandatory, Position = 0)][string]$Source,
-    [Parameter(Position = 1)][string]$Target
+    [Parameter(Mandatory, Position = 1)][string]$Target
 )
 
 $ErrorActionPreference = 'Stop'
@@ -143,11 +143,7 @@ try {
     # --- 1b. Resolve source and target paths ---
     $sourceAbs = Resolve-InputPath $Source
 
-    if ($Target) {
-        $targetAbs = Resolve-OutputPath $Target
-    } else {
-        $targetAbs = Resolve-OutputPath (Get-SafeName -InputPath $sourceAbs -Extension '.mp4')
-    }
+    $targetAbs = Resolve-OutputPath $Target
 
     $targetExists = Test-Path -LiteralPath $targetAbs
     if ($targetExists -and -not $Force) {

@@ -59,45 +59,22 @@ nightmix/
 
 Every index (probe output, convert parameters) is per-type and 0-based, matching ffmpeg's `-map 0:a:N`. Three audio tracks → indices `0,1,2` regardless of absolute stream numbers. What probe prints pastes directly into convert. No 1-based display indices.
 
-### 3.2 Output filename derivation
-
-When no target is given, derive from the **input filename** (not directory):
-
-1. Filename without extension.
-2. Lowercase.
-3. Replace runs of anything **not** `[\p{L}\p{Nd}]` with a single `-` (`\p{L}` = any Unicode letter, `\p{Nd}` = decimal digit).
-4. Trim leading/trailing `-`.
-5. Truncate to **36** chars, trim trailing `-` again.
-6. Empty result → `output`.
-7. Append extension (`.mp4` convert, `.mkv` dvdmux).
-
-**Non-ASCII is preserved, not transliterated** — `\p{L}` keeps Cyrillic and every other script; Windows/PowerShell/ffmpeg handle it fine.
-
-```
-"Тестовая Запись (2014) 1080p.mkv"  ->  "тестовая-запись-2014-1080p.mp4"
-"Some.Video.2019.REMASTERED.mkv"    ->  "some-video-2019-remastered.mp4"
-"A Very Long Video Title That Exceeds The Limit.mkv"
-                                    ->  "a-very-long-video-title-that-exceeds.mp4"
-```
-
-Output goes in the **current working directory**, not next to the source.
-
-### 3.3 `-DryRun`
+### 3.2 `-DryRun`
 
 On every FS-modifying script. Prints the human-readable plan and the **complete, copy-pasteable ffmpeg command** (one arg group per line, no `...`), then executes nothing. Primary debugging tool.
 
-### 3.4 Overwrite protection
+### 3.3 Overwrite protection
 
 Existing output → fail unless `-Force`. Pass `-y` to ffmpeg only after the script decides overwrite is safe, never unconditionally. `-DryRun` still previews the command when the output exists (it writes nothing); the refusal applies only to real runs.
 
-### 3.5 Error handling
+### 3.4 Error handling
 
 - `$ErrorActionPreference = 'Stop'` at the top of each script.
 - Validate before work: tools reachable, source exists, every requested index exists, every external file exists. Report all validation problems at once where practical.
 - ffmpeg non-zero exit → surface exit code + last ~20 lines of stderr.
 - Exit codes: `0` success, `1` validation/usage, `2` ffmpeg failure.
 
-### 3.6 Console output
+### 3.5 Console output
 
 Compact. No progress bars or Unicode boxes. Pass ffmpeg's own progress through live — don't capture and hide it.
 
@@ -139,6 +116,7 @@ $AudioBitrate    = '192k'
 $AudioSampleRate = 48000
 
 # Filter chain (see 7.4)
+$StereoDownmix   = 'aformat=channel_layouts=stereo'
 $DialogueEnhance = 'dialoguenhance=original=1:enhance=1:voice=2'
 $Compressor      = 'acompressor=threshold=-21dB:ratio=4:attack=20:release=250:makeup=2'
 $Loudnorm        = 'loudnorm=I=-18:TP=-1.5:LRA=11'
@@ -149,7 +127,6 @@ $SubtitleCodec = 'mov_text'
 $MovFlags      = '+faststart'
 
 # Misc
-$NameMaxLength = 36
 $NoneKeyword   = 'none'
 ```
 
@@ -169,9 +146,8 @@ Anything in neither list → treat as image-based (skip). Fail safe: an unknown 
 - **`Get-StreamLanguage -Stream`** → `$Stream.tags.language` or `$null`. No placeholder — caller decides.
 - **`Get-StreamTitle -Stream`** → `$Stream.tags.title` or `$null`.
 - **`Get-ChannelLayoutLabel -Stream`** — prefer non-empty `channel_layout`; else map count: 1→`1.0`, 2→`2.0`, 6→`5.1`, 8→`7.1`, else `"$channels ch"`.
-- **`Get-SafeName -InputPath -Extension`** — §3.2 in full.
 - **`Resolve-InputPath -Path` / `Resolve-OutputPath -Path`** — §8.4. Every path to ffmpeg goes through one of these.
-- **`Invoke-FFmpeg -Arguments <string[]> -DryRun`** — the single ffmpeg execution point. `-DryRun`: pretty-print (§3.3), return. Else: execute, stream stderr live; non-zero exit → throw with code + stderr tail.
+- **`Invoke-FFmpeg -Arguments <string[]> -DryRun`** — the single ffmpeg execution point. `-DryRun`: pretty-print (§3.2), return. Else: execute, stream stderr live; non-zero exit → throw with code + stderr tail.
 - **`Write-Plan -Lines <string[]>`** — consistent formatting for the plan block (used by `-DryRun` and the real-run pre-flight summary).
 
 ---
@@ -215,11 +191,11 @@ Rules:
 ## 6. `bin/nightmix-dvdmux.ps1`
 
 ```powershell
-nightmix-dvdmux.ps1 [-DryRun] [-Force] <directory> [<result>]
+nightmix-dvdmux.ps1 [-DryRun] [-Force] <directory> <result>
 ```
 
 - `-Directory` positional 0, mandatory. Accept the folder containing `VIDEO_TS` or the `VIDEO_TS` folder itself.
-- `-Result` positional 1, optional. Default: §3.2 rules on the **directory name**, `.mkv` (the one place a directory name is used).
+- `-Result` positional 1, **mandatory**. Output `.mkv` path.
 
 ### 6.2 Title selection
 
@@ -271,12 +247,12 @@ nightmix-convert.ps1 [-DryRun] [-Force] [-VideoProfile <string>]
                      [-Audio <string>] [-ExtraAudio <string[]>]
                      [-Subtitles <string>] [-ExtraSubtitles <string[]>]
                      [-Deinterlace]
-                     <source> [<target>]
+                     <source> <target>
 ```
 
 | Parameter | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `-DryRun` | switch | off | §3.3. |
+| `-DryRun` | switch | off | §3.2. |
 | `-Force` | switch | off | Allow overwriting target. |
 | `-VideoProfile` | string | `standard` | Key into `$VideoProfiles` (`standard`/`light`). |
 | `-Audio` | string | **mandatory — §7.1.2** | 0-based audio indices, e.g. `"0,2"`, or `"none"`. |
@@ -285,7 +261,7 @@ nightmix-convert.ps1 [-DryRun] [-Force] [-VideoProfile <string>]
 | `-ExtraSubtitles` | string[] | none | External subtitle file paths. |
 | `-Deinterlace` | switch | off | Apply `$DeinterlaceFilter`. Never automatic. |
 | `-Source` | string | — | Positional 0, mandatory. |
-| `-Target` | string | derived | Positional 1. §3.2, `.mp4`. |
+| `-Target` | string | — | Positional 1, mandatory. Output `.mp4` path. |
 
 **7.1.1 Parsing `-Audio`/`-Subtitles`.** Whitespace around commas is fine (`"0, 2"` == `"0,2"`). `"none"` (case-insensitive, `$NoneKeyword`) means no streams of that type — must be the whole value, can't combine with indices; `-Audio "none"` + `-ExtraAudio` is contradictory → reject. Reject `-1` explicitly, pointing at `none` (a leading dash is ambiguous to the parser).
 
@@ -407,7 +383,7 @@ Inputs: source `0`, then `-ExtraAudio` files, then `-ExtraSubtitles` files, in o
 
 ```
 Source:  Sample Video (2014) 1080p.mkv
-Target:  sample-video-2014-1080p.mp4
+Target:  sample-video.mp4
 
 Video:   1920x1080 -> 1920x1080  (no scaling needed)
          h264 -> libx264 crf 22, profile standard, cap 8M
@@ -457,7 +433,7 @@ Scripts live in a git repo; videos live elsewhere. Workflow: `cd` to the video, 
 ```powershell
 cd "E:\Video\Sample"
 nightmix-probe.ps1 "video.mkv"
-nightmix-convert.ps1 -Audio "0" -Subtitles "1" "video.mkv"
+nightmix-convert.ps1 -Audio "0" -Subtitles "1" "video.mkv" "video.mp4"
 ```
 
 ### 8.2 `install.ps1`
@@ -514,7 +490,7 @@ Short: what it does (both problems), prereqs (Windows, PS 5.1+, ffmpeg 6.0+ via 
 - 720p not upscaled to 1080p; 4K downscaled with aspect kept; 23.976 stays, 60 → 30; output within `maxrate` over any 2 s; 10-bit HEVC → 8-bit H.264; `-VideoProfile light` → 720p/level 3.1.
 - PGS index → warn + skip, not crash. `-Audio none` → video-only MP4.
 - Internal + external audio both get the full chain; tags survive, absent tags emit no flag; tagless external gets filename-stem title; output audio is 48 kHz not 192 kHz.
-- `Тестовая Запись (2014).mkv` → `тестовая-запись-2014.mp4`, converts.
+- A source whose path contains Cyrillic characters and spaces converts successfully.
 - dvdmux `-DryRun` picks the main title and lists VOBs in order.
 - After install + new terminal, all three scripts run from an unrelated drive; running install twice doesn't duplicate the `PATH` entry; `lib/` is not on `PATH`.
 ```
