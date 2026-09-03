@@ -76,7 +76,17 @@ Existing output → fail unless `-Force`. Pass `-y` to ffmpeg only after the scr
 
 ### 3.5 Console output
 
-Compact. No progress bars or Unicode boxes. Pass ffmpeg's own progress through live — don't capture and hide it.
+Compact, and none of ffmpeg's own chatter. `Invoke-FFmpeg` adds `-nostats -loglevel error -progress pipe:1`, which suppresses the banner, the input/output stream dumps, the x264 options wall and the closing statistics, and emits a machine-readable `key=value` stream instead. From that we render a single status line:
+
+```
+[ 42%]  00:48:12 / 01:54:30   speed 3.1x   eta 00:21:40
+```
+
+The percentage and ETA come from the **source duration**, which `nightmix-convert.ps1` already knows from the probe and which ffmpeg's own output never shows. `nightmix-dvdmux.ps1` passes no duration and gets elapsed media time plus speed.
+
+On a console the line is repainted in place with a carriage return; when stderr is redirected it is written as plain lines in 5% steps instead (about 20 lines whatever the length), so logs stay readable. No progress bars, no Unicode boxes.
+
+Real errors are never hidden: only the known progress keys are consumed, everything else is echoed and kept in the failure tail. These flags are part of the command printed by `-DryRun`, so what is shown is exactly what runs.
 
 ---
 
@@ -148,7 +158,7 @@ Anything in neither list → treat as image-based (skip). Fail safe: an unknown 
 - **`Get-StreamTitle -Stream`** → `$Stream.tags.title` or `$null`.
 - **`Get-ChannelLayoutLabel -Stream`** — prefer non-empty `channel_layout`; else map count: 1→`1.0`, 2→`2.0`, 6→`5.1`, 8→`7.1`, else `"$channels ch"`.
 - **`Resolve-InputPath -Path` / `Resolve-OutputPath -Path`** — §8.4. Every path to ffmpeg goes through one of these.
-- **`Invoke-FFmpeg -Arguments <string[]> -DryRun`** — the single ffmpeg execution point. `-DryRun`: pretty-print (§3.2), return. Else: execute, stream stderr live; non-zero exit → throw with code + stderr tail.
+- **`Invoke-FFmpeg -Arguments <string[]> [-TotalSeconds <double>] -DryRun`** — the single ffmpeg execution point. Prepends `-nostats -loglevel error -progress pipe:1` (see §3.5) to the caller's arguments. `-DryRun`: pretty-print the whole thing (§3.2), return. Else: execute, render the progress line, echo real log output; non-zero exit → throw with code + stderr tail. `-TotalSeconds` is the source duration and enables the percentage/ETA.
 - **`Write-Plan -Lines <string[]>`** — consistent formatting for the plan block (used by `-DryRun` and the real-run pre-flight summary).
 
 ---
@@ -478,6 +488,7 @@ Short: what it does (both problems), prereqs (Windows, PS 5.1+, ffmpeg 6.0+ via 
 - **ffprobe JSON.** PS 5.1 `ConvertFrom-Json` → `PSCustomObject`; test presence via `$s.PSObject.Properties.Name -contains 'tags'`, not `$null` on a maybe-absent property.
 - **Fractions.** `r_frame_rate` like `"24000/1001"` — parse and divide, guard `0` denominator.
 - **Duration.** Prefer `format.duration`, fall back to the video stream's.
+- **ffmpeg progress.** Parse `out_time` (`HH:MM:SS.micro`), not `out_time_ms` — despite its name that key reports microseconds. `speed=` is `N/A` until ffmpeg has a measurement, and the final block lands a hair under the full duration, so the 100% step has to be emitted explicitly on `progress=end`.
 - **Regex.** `\p{L}`/`\p{Nd}` work in .NET regex (`-replace`). `'Тестовая Запись (2014)' -replace '[^\p{L}\p{Nd}]+', '-'` behaves per §3.2.
 - Keep filter-chain and `-map` construction as separate, eyeball-able functions. Add comment-based help to each entry point.
 

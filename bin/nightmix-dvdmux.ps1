@@ -93,7 +93,10 @@ try {
     }
 
     # --- Pick the largest group; order its files by M ---
-    $summaries = foreach ($nn in ($groups.Keys | Sort-Object)) {
+    # @() is required: with a single group this would be one PSCustomObject
+    # whose own 'Count' property (its file count) would shadow the collection
+    # count, making the report say "Found 2 titles" for one 2-file title.
+    $summaries = @(foreach ($nn in ($groups.Keys | Sort-Object)) {
         $files = @($groups[$nn] | Sort-Object M)
         [pscustomobject]@{
             NN    = $nn
@@ -101,7 +104,7 @@ try {
             Count = $files.Count
             Total = ($files | Measure-Object -Property Size -Sum).Sum
         }
-    }
+    })
     $selected = $summaries | Sort-Object Total -Descending | Select-Object -First 1
 
     # --- Report the decision (both dry and real runs) ---
@@ -131,7 +134,7 @@ try {
     $concatInput = 'concat:' + (($selected.Files | ForEach-Object { $_.File.FullName }) -join '|')
 
     $ff = New-Object System.Collections.Generic.List[string]
-    $ff.Add('-hide_banner')
+    # (banner and stream dumps are suppressed by the -loglevel flag Invoke-FFmpeg adds)
     if ($targetExists -and $Force) { $ff.Add('-y') }
     # Large probe window is required: concat: probes only the start, so subtitle
     # streams that first appear later would otherwise be missed.

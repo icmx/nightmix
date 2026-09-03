@@ -277,36 +277,133 @@ function Format-FFmpegCommand {
     return $lines.ToArray()
 }
 
+# Seconds from an ffmpeg "HH:MM:SS.micro" timestamp; $null if unparseable.
+function ConvertTo-SecondsFromHms {
+    param([string]$Value)
+    if ($Value -notmatch '^(\d+):([0-5]\d):([0-5]\d(?:\.\d+)?)$') { return $null }
+    return ([double]$Matches[1] * 3600 + [double]$Matches[2] * 60 + (ConvertTo-InvariantDouble $Matches[3]))
+}
+
+function Format-Hms {
+    param([double]$Seconds)
+    if ($Seconds -lt 0 -or [double]::IsNaN($Seconds) -or [double]::IsInfinity($Seconds)) { $Seconds = 0 }
+    $ts = [System.TimeSpan]::FromSeconds([math]::Floor($Seconds))
+    return ('{0:00}:{1:00}:{2:00}' -f [int][math]::Floor($ts.TotalHours), $ts.Minutes, $ts.Seconds)
+}
+
+# Progress flags injected by Invoke-FFmpeg. -nostats/-loglevel silence the
+# stream dumps, the x264 options wall and the closing statistics; -progress
+# emits a machine-readable key=value stream we render ourselves.
+$ProgressFlags = @('-nostats', '-loglevel', 'error', '-progress', 'pipe:1')
+
+# Progress keys we consume silently; anything else on the stream is real log
+# output. Listed explicitly so a genuine error line is never swallowed.
+$ProgressKeyPattern = '^(frame|fps|bitrate|total_size|out_time_us|out_time_ms|dup_frames|drop_frames|stream_[0-9_]+q)='
+
 # 4.3 The single execution point for ffmpeg.
+#
+# Quietens ffmpeg and drives a compact one-line readout from its -progress
+# stream. $TotalSeconds (the source duration, which ffmpeg's own output never
+# shows) turns that into a percentage and an ETA; omit it and the line falls
+# back to elapsed media time plus speed.
 function Invoke-FFmpeg {
     param(
         [Parameter(Mandatory)][string[]]$Arguments,
+        [double]$TotalSeconds = 0,
         [switch]$DryRun
     )
 
+    # The progress flags are part of the command we print, so -DryRun shows
+    # exactly what a real run executes.
+    $full = @($ProgressFlags + $Arguments)
+
     if ($DryRun) {
-        Write-Plan -Lines (Format-FFmpegCommand -Arguments $Arguments)
+        Write-Plan -Lines (Format-FFmpegCommand -Arguments $full)
         return
     }
 
     # Splat the array through the call operator so each element is passed as one
     # argument (correct quoting) rather than reassembling a command string.
-    # 2>&1 merges ffmpeg's stderr (its live progress) into the pipeline so we
-    # can echo it live and keep the last lines for a failure message.
     #
-    # ffmpeg writes normal progress to stderr. Under $ErrorActionPreference =
-    # 'Stop' (set by the entry points), 2>&1 would wrap the first stderr line in
-    # a terminating NativeCommandError and abort. Force 'Continue' locally so
-    # stderr is just data; real failure is detected via $LASTEXITCODE below.
+    # 2>&1 merges stderr into the pipeline. Under $ErrorActionPreference =
+    # 'Stop' (set by the entry points) that would wrap ffmpeg's first stderr
+    # line in a terminating NativeCommandError and abort. Force 'Continue'
+    # locally; real failure is detected via $LASTEXITCODE below.
     $ErrorActionPreference = 'Continue'
-    $tail = New-Object System.Collections.Generic.Queue[string]
-    & $FFmpegPath @Arguments 2>&1 | ForEach-Object {
+
+    $tail      = New-Object System.Collections.Generic.Queue[string]
+    $speed     = ''
+    $lastShown = -1.0
+    $painted   = $false
+    # Overwrite one line in place on a console; when redirected, emit occasional
+    # plain lines instead so logs stay readable.
+    $live      = -not [Console]::IsErrorRedirected
+
+    & $FFmpegPath @full 2>&1 | ForEach-Object {
         $line = if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.ToString() } else { "$_" }
+
+        if ($line -match '^speed=\s*(.+?)\s*$') {
+            # ffmpeg reports speed=N/A until it has a measurement; show nothing
+            # rather than "speed N/A".
+            $v = $Matches[1]
+            $speed = if ($v -match '^[0-9.]+x$') { $v } else { '' }
+            return
+        }
+        if ($line -match '^out_time=(.+?)\s*$') {
+            $secs = ConvertTo-SecondsFromHms $Matches[1]
+            if ($null -eq $secs) { return }
+
+            $text = ''
+            if ($TotalSeconds -gt 0) {
+                $pct = [math]::Min(100, [int][math]::Floor($secs * 100 / $TotalSeconds))
+                $text = ('[{0,3}%]  {1} / {2}' -f $pct, (Format-Hms $secs), (Format-Hms $TotalSeconds))
+            } else {
+                $text = ('         {0}' -f (Format-Hms $secs))
+            }
+            if ($speed) { $text += "   speed $speed" }
+
+            $rate = 0.0
+            if ($speed -match '^([0-9.]+)x$') { $rate = [double]::Parse($Matches[1], [System.Globalization.CultureInfo]::InvariantCulture) }
+            if ($TotalSeconds -gt 0 -and $rate -gt 0) {
+                $text += ('   eta {0}' -f (Format-Hms (($TotalSeconds - $secs) / $rate)))
+            }
+
+            if ($live) {
+                [Console]::Error.Write("`r" + $text.PadRight(76))
+                $painted = $true
+            } else {
+                # Redirected: emit occasional plain lines instead of repainting.
+                # Step by 5% when the total is known (~20 lines whatever the
+                # length), otherwise once a minute of media time.
+                $mark = if ($TotalSeconds -gt 0) { [math]::Floor($secs * 20 / $TotalSeconds) } else { [math]::Floor($secs / 60) }
+                if ($mark -gt $lastShown) {
+                    [Console]::Error.WriteLine($text.Trim())
+                    $lastShown = $mark
+                }
+            }
+            return
+        }
+        if ($line -match '^progress=\s*(.+?)\s*$') {
+            # ffmpeg's last block lands a hair under the full duration, so the
+            # 100% step never fires on its own — close it out explicitly.
+            if ($Matches[1] -eq 'end' -and $TotalSeconds -gt 0) {
+                $final = ('[{0,3}%]  {1} / {2}' -f 100, (Format-Hms $TotalSeconds), (Format-Hms $TotalSeconds))
+                if ($live) { [Console]::Error.Write("`r" + $final.PadRight(76)); $painted = $true }
+                else { [Console]::Error.WriteLine($final) }
+            }
+            return
+        }
+        if ($line -match $ProgressKeyPattern) { return }
+
+        # Anything else is genuine log/error output.
+        if ($painted) { [Console]::Error.WriteLine(''); $painted = $false }
         [Console]::Error.WriteLine($line)
         $tail.Enqueue($line)
         while ($tail.Count -gt 20) { [void]$tail.Dequeue() }
     }
     $code = $LASTEXITCODE
+
+    if ($painted) { [Console]::Error.WriteLine('') }
 
     if ($code -ne 0) {
         $detail = ($tail.ToArray() -join "`n")

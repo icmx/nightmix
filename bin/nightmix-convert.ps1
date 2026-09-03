@@ -177,6 +177,13 @@ try {
     }
     $video = $srcVideo[0]
 
+    # Source duration drives the progress percentage/ETA (ffmpeg's own output
+    # reports elapsed media time but never the total).
+    $durationSeconds = 0
+    $durRaw = Get-JsonProperty -Object $info.format -Name 'duration'
+    if (-not $durRaw) { $durRaw = Get-JsonProperty -Object $video -Name 'duration' }
+    if ($durRaw) { try { $durationSeconds = ConvertTo-InvariantDouble "$durRaw" } catch { $durationSeconds = 0 } }
+
     # --- 2a. Validate internal audio indices ---
     if (-not $audioSel.None) {
         foreach ($idx in $audioSel.Indices) {
@@ -328,7 +335,7 @@ try {
 
     # --- 5. Build the ffmpeg command (string[] to splat) ---
     $ff = New-Object System.Collections.Generic.List[string]
-    $ff.Add('-hide_banner')
+    # (banner and stream dumps are suppressed by the -loglevel flag Invoke-FFmpeg adds)
     if ($targetExists -and $Force) { $ff.Add('-y') }
 
     foreach ($ip in $inputPaths) { $ff.Add('-i'); $ff.Add($ip) }
@@ -477,7 +484,7 @@ try {
     Write-Output ''
 
     # --- 6. Execute (or print command on -DryRun) ---
-    Invoke-FFmpeg -Arguments $ff.ToArray() -DryRun:$DryRun
+    Invoke-FFmpeg -Arguments $ff.ToArray() -TotalSeconds $durationSeconds -DryRun:$DryRun
 
     if (-not $DryRun) { Write-Output "Done. -> $targetAbs" }
     exit 0
