@@ -1,0 +1,3 @@
+# Local configuration: personal overrides of lib/common.ps1 defaults.
+# Copy config.example.ps1 to config.ps1 (install.ps1 does it for you).
+/config.ps1

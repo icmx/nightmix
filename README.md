@@ -18,7 +18,7 @@ Clone the repo anywhere, then run once:
 .\install.ps1
 ```
 
-This adds `bin\` to your user `PATH` (no admin needed), checks your execution policy, and verifies ffmpeg. Open a **new** PowerShell window afterwards so it picks up the new `PATH`. Re-run `install.ps1` after moving the repo; `.\install.ps1 -Uninstall` removes it.
+This adds `bin\` to your user `PATH` (no admin needed), checks your execution policy, verifies ffmpeg, and creates `config.ps1` from `config.example.ps1` if you don't have one yet. Open a **new** PowerShell window afterwards so it picks up the new `PATH`. Re-run `install.ps1` after moving the repo; `.\install.ps1 -Uninstall` removes it (and leaves `config.ps1` alone).
 
 ## Usage
 
@@ -33,6 +33,8 @@ nightmix-probe.ps1 "video.mkv"
 # Convert: audio track 0, subtitle track 1.
 nightmix-convert.ps1 -Audio "0" -Subtitles "1" "video.mkv" "video.mp4"
 ```
+
+Output lands in the current directory — unless you set a default output directory, see below.
 
 `nightmix-probe.ps1` prints a compact, scannable report and flags anything worth knowing (image-based subtitles, interlacing, 10-bit/HEVC sources that are likely to stutter). Its per-type, 0-based indices paste straight into `nightmix-convert.ps1`.
 
@@ -51,6 +53,25 @@ nightmix-convert.ps1 -Audio "0" -Subtitles "1" "video.mkv" "video.mp4"
 - `-Deinterlace` applies deinterlacing (never automatic — `probe` tells you when).
 - `-DryRun` prints the plan and the full, copy-pasteable ffmpeg command without running anything. This is the best way to see exactly what will happen.
 - `-Force` allows overwriting an existing output.
+- `-OutputDirectory` sends the output somewhere else for one run (see below).
+
+## Sending output to a fixed directory
+
+By default the output goes wherever you are, like any other command-line tool. If you'd rather have results collect in one place, set it in `config.ps1`:
+
+```powershell
+$DefaultOutputDirectory = 'E:\Video\Converted'
+```
+
+From then on a **bare filename** goes there, while anything carrying a path is taken literally:
+
+| You type | Where it goes |
+| --- | --- |
+| `out.mp4` | `E:\Video\Converted\out.mp4` |
+| `.\out.mp4` | the current directory |
+| `D:\elsewhere\out.mp4` | exactly there |
+
+So `.\` is how you say "no, right here" for a single file, and `-OutputDirectory` overrides the setting for a single run. The directory has to exist already — nightmix won't create it. Both scripts print the full resolved path as `Target:` before doing anything, so you can always see where a file is about to go (`-DryRun` shows it without writing).
 
 ## Still dropping frames?
 
@@ -64,6 +85,8 @@ nightmix-convert.ps1 -Audio "0" -VideoProfile light "video.mkv" "video.mp4"
 
 ## Tuning
 
-Every tunable value — video profiles, CRF, bitrate caps, the audio filter chain, AAC bitrate — lives in [`lib/common.ps1`](lib/common.ps1) as commented constants. Nothing tunable is hardcoded in the scripts, so adjust it there.
+Every tunable value — video profiles, CRF, bitrate caps, the audio filter chain, AAC bitrate — lives in [`lib/common.ps1`](lib/common.ps1) as commented constants. Nothing tunable is hardcoded in the scripts.
+
+Don't edit that file, though: put your changes in **`config.ps1`**, which is loaded last and overrides any of those constants. It's ignored by git, so your settings survive updates and never turn into merge conflicts. [`config.example.ps1`](config.example.ps1) is the annotated template and explains the settings worth touching first — the default output directory, and the two audio knobs (`loudnorm I=` sets the final loudness, the compressor sets how hard quiet dialogue is lifted).
 
 See [`docs/spec.md`](docs/spec.md) for the full design and rationale.

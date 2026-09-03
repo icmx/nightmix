@@ -30,10 +30,15 @@ or "none". Default: none (subtitles are opt-in).
 Paths to external subtitle files (text-based only).
 .PARAMETER Deinterlace
 Apply the deinterlace filter. Never automatic.
+.PARAMETER OutputDirectory
+Where a bare target filename lands, overriding $DefaultOutputDirectory from
+config.ps1 for this run. Ignored when the target carries a path of its own.
 .PARAMETER Source
 Positional 0, mandatory. Input file.
 .PARAMETER Target
-Positional 1, mandatory. Output .mp4 path.
+Positional 1, mandatory. Output .mp4 path. A bare filename goes to the default
+output directory if one is configured; anything with a path in it (.\out.mp4,
+D:\x\out.mp4) is taken literally.
 
 .EXAMPLE
 nightmix-convert.ps1 -Audio "0" -Subtitles "1" "video.mkv" "video.mp4"
@@ -50,6 +55,7 @@ param(
     [string]$Subtitles,
     [string[]]$ExtraSubtitles,
     [switch]$Deinterlace,
+    [string]$OutputDirectory,
     [Parameter(Mandatory, Position = 0)][string]$Source,
     [Parameter(Mandatory, Position = 1)][string]$Target
 )
@@ -155,7 +161,10 @@ try {
     # --- 1b. Resolve source and target paths ---
     $sourceAbs = Resolve-InputPath $Source
 
-    $targetAbs = Resolve-OutputPath $Target
+    # A bare target filename may be redirected to a configured directory;
+    # -OutputDirectory beats config.ps1, and a target carrying a path beats both.
+    $outDir = if ($OutputDirectory) { $OutputDirectory } else { $DefaultOutputDirectory }
+    $targetAbs = Resolve-OutputPath -Path $Target -Directory $outDir
 
     $targetExists = Test-Path -LiteralPath $targetAbs
     if ($targetExists -and -not $Force) {
@@ -430,7 +439,9 @@ try {
     # --- 4. Report the plan (both dry and real runs) ---
     $plan = New-Object System.Collections.Generic.List[string]
     $plan.Add("Source:  $([System.IO.Path]::GetFileName($sourceAbs))")
-    $plan.Add("Target:  $([System.IO.Path]::GetFileName($targetAbs))")
+    # Full path, not just the name: with a default output directory in play the
+    # destination is no longer obvious from the command line.
+    $plan.Add("Target:  $targetAbs")
     $plan.Add('')
 
     $srcW = Get-JsonProperty -Object $video -Name 'width'

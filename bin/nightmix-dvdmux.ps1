@@ -16,10 +16,15 @@ nightmix-convert.ps1.
 Print the title decision and the ffmpeg command without running anything.
 .PARAMETER Force
 Allow overwriting an existing result file.
+.PARAMETER OutputDirectory
+Where a bare result filename lands, overriding $DefaultOutputDirectory from
+config.ps1 for this run. Ignored when the result carries a path of its own.
 .PARAMETER Directory
 Positional 0, mandatory. The folder containing VIDEO_TS, or the VIDEO_TS folder itself.
 .PARAMETER Result
-Positional 1, mandatory. Output .mkv path.
+Positional 1, mandatory. Output .mkv path. A bare filename goes to the default
+output directory if one is configured; anything with a path in it is taken
+literally.
 
 .EXAMPLE
 nightmix-dvdmux.ps1 "D:\rips\SomeDisc" "disc.mkv"
@@ -30,6 +35,7 @@ nightmix-dvdmux.ps1 -DryRun "D:\rips\SomeDisc\VIDEO_TS" "disc.mkv"
 param(
     [switch]$DryRun,
     [switch]$Force,
+    [string]$OutputDirectory,
     [Parameter(Mandatory, Position = 0)][string]$Directory,
     [Parameter(Mandatory, Position = 1)][string]$Result
 )
@@ -63,7 +69,10 @@ try {
     }
 
     # --- Resolve the result path ---
-    $targetAbs = Resolve-OutputPath $Result
+    # A bare result filename may be redirected to a configured directory;
+    # -OutputDirectory beats config.ps1, and a result carrying a path beats both.
+    $outDir = if ($OutputDirectory) { $OutputDirectory } else { $DefaultOutputDirectory }
+    $targetAbs = Resolve-OutputPath -Path $Result -Directory $outDir
 
     $targetExists = Test-Path -LiteralPath $targetAbs
     $existsNeedsForce = $false
@@ -117,7 +126,9 @@ try {
     }
     $report.Add('')
     $report.Add("Source:  $vtsDir")
-    $report.Add("Target:  $([System.IO.Path]::GetFileName($targetAbs))")
+    # Full path, not just the name: with a default output directory in play the
+    # destination is no longer obvious from the command line.
+    $report.Add("Target:  $targetAbs")
     Write-Plan -Lines $report.ToArray()
 
     if ($selected.Total -lt 100MB) {

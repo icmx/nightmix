@@ -40,6 +40,8 @@ nightmix/
   bin/  nightmix-probe.ps1  nightmix-convert.ps1  nightmix-dvdmux.ps1
   lib/  common.ps1
   install.ps1
+  config.example.ps1      tracked template
+  config.ps1              local overrides, gitignored (§4.4)
   README.md
 ```
 
@@ -125,7 +127,7 @@ $AudioCodec      = 'aac'
 $AudioBitrate    = '192k'
 $AudioSampleRate = 48000
 
-# Filter chain (see 7.4)
+# Filter chain (see 7.4). Tune these in config.ps1, not here (§4.4).
 $StereoDownmix   = 'aformat=channel_layouts=stereo'
 $DialogueEnhance = 'dialoguenhance=original=1:enhance=1:voice=2'
 $Compressor      = 'acompressor=threshold=-21dB:ratio=4:attack=20:release=250:makeup=2'
@@ -135,6 +137,9 @@ $Limiter         = 'alimiter=limit=0.95:level=disabled'
 # Container
 $SubtitleCodec = 'mov_text'
 $MovFlags      = '+faststart'
+
+# Output. Unset = plain CLI behaviour (bare target lands in the cwd); see §8.4.
+$DefaultOutputDirectory = $null
 
 # Misc
 $NoneKeyword   = 'none'
@@ -157,9 +162,27 @@ Anything in neither list → treat as image-based (skip). Fail safe: an unknown 
 - **`Get-StreamLanguage -Stream`** → `$Stream.tags.language` or `$null`. No placeholder — caller decides.
 - **`Get-StreamTitle -Stream`** → `$Stream.tags.title` or `$null`.
 - **`Get-ChannelLayoutLabel -Stream`** — prefer non-empty `channel_layout`; else map count: 1→`1.0`, 2→`2.0`, 6→`5.1`, 8→`7.1`, else `"$channels ch"`.
-- **`Resolve-InputPath -Path` / `Resolve-OutputPath -Path`** — §8.4. Every path to ffmpeg goes through one of these.
+- **`Resolve-InputPath -Path`** / **`Resolve-OutputPath -Path [-Directory <string>]`** — §8.4. Every path to ffmpeg goes through one of these. `-Directory` redirects a bare output filename; it throws (exit 1) if that directory does not exist.
+- **`Test-PathHasDirectory -Path`** — §8.4. `$true` if the argument carries a path (a separator anywhere, or the drive-relative `C:out.mp4` form), `$false` for a bare filename.
 - **`Invoke-FFmpeg -Arguments <string[]> [-TotalSeconds <double>] -DryRun`** — the single ffmpeg execution point. Prepends `-nostats -loglevel error -progress pipe:1` (see §3.5) to the caller's arguments. `-DryRun`: pretty-print the whole thing (§3.2), return. Else: execute, render the progress line, echo real log output; non-zero exit → throw with code + stderr tail. `-TotalSeconds` is the source duration and enables the percentage/ETA.
 - **`Write-Plan -Lines <string[]>`** — consistent formatting for the plan block (used by `-DryRun` and the real-run pre-flight summary).
+
+### 4.4 Local overrides (`config.ps1`)
+
+`config.example.ps1` (repo root, tracked) is a commented template. `config.ps1` is the user's copy, **gitignored**, so personal settings survive updates and never become merge conflicts. `install.ps1` creates it from the template when absent and never overwrites an existing one.
+
+`common.ps1` dot-sources it as its **last** statement, so it can override any §4.1 constant:
+
+```powershell
+$NightmixConfigPath = [System.IO.Path]::GetFullPath(
+    [System.IO.Path]::Combine($PSScriptRoot, '..', 'config.ps1'))
+
+if (Test-Path -LiteralPath $NightmixConfigPath) { . $NightmixConfigPath }
+```
+
+Absent config is a silent no-op — a fresh clone works without one. It is `.ps1` rather than a data format on purpose: overriding any constant is the point, and dot-sourcing needs no parser. The cost is that it executes in the entry point's own scope, **after** parameter binding, so assigning to a name a script uses as a parameter would silently overwrite the user's own argument. The template says so.
+
+`$DefaultOutputDirectory` (§8.4) is the setting this exists for; the audio chain (§7.4) is the other expected one, since that is what gets tuned per playback device.
 
 ---
 
@@ -202,11 +225,12 @@ Rules:
 ## 6. `bin/nightmix-dvdmux.ps1`
 
 ```powershell
-nightmix-dvdmux.ps1 [-DryRun] [-Force] <directory> <result>
+nightmix-dvdmux.ps1 [-DryRun] [-Force] [-OutputDirectory <string>] <directory> <result>
 ```
 
 - `-Directory` positional 0, mandatory. Accept the folder containing `VIDEO_TS` or the `VIDEO_TS` folder itself.
-- `-Result` positional 1, **mandatory**. Output `.mkv` path.
+- `-Result` positional 1, **mandatory**. Output `.mkv` path, resolved per §8.4.
+- `-OutputDirectory` optional. Overrides `$DefaultOutputDirectory` for this run.
 
 ### 6.2 Title selection
 
@@ -257,7 +281,7 @@ Always re-encodes — no copy path.
 nightmix-convert.ps1 [-DryRun] [-Force] [-VideoProfile <string>]
                      [-Audio <string>] [-ExtraAudio <string[]>]
                      [-Subtitles <string>] [-ExtraSubtitles <string[]>]
-                     [-Deinterlace]
+                     [-Deinterlace] [-OutputDirectory <string>]
                      <source> <target>
 ```
 
@@ -271,8 +295,9 @@ nightmix-convert.ps1 [-DryRun] [-Force] [-VideoProfile <string>]
 | `-Subtitles` | string | `none` | 0-based subtitle indices, `"all"` for every internal text subtitle, or `"none"`. |
 | `-ExtraSubtitles` | string[] | none | External subtitle file paths. |
 | `-Deinterlace` | switch | off | Apply `$DeinterlaceFilter`. Never automatic. |
+| `-OutputDirectory` | string | `$DefaultOutputDirectory` | Where a **bare** target filename lands (§8.4). |
 | `-Source` | string | — | Positional 0, mandatory. |
-| `-Target` | string | — | Positional 1, mandatory. Output `.mp4` path. |
+| `-Target` | string | — | Positional 1, mandatory. Output `.mp4` path, resolved per §8.4. |
 
 **7.1.1 Parsing `-Audio`/`-Subtitles`.** Whitespace around commas is fine (`"0, 2"` == `"0,2"`). `"none"` (case-insensitive, `$NoneKeyword`) means no streams of that type — must be the whole value, can't combine with indices; `-Audio "none"` + `-ExtraAudio` is contradictory → reject. `"all"` (case-insensitive, `$AllKeyword`) is accepted for `-Subtitles` only and selects every internal **text** subtitle; like `none` it must be the whole value. `-Audio` has no bulk keyword — picking audio is exactly the choice that must be explicit. Reject `-1` explicitly, pointing at `none` (a leading dash is ambiguous to the parser).
 
@@ -392,9 +417,11 @@ Inputs: source `0`, then `-ExtraAudio` files, then `-ExtraSubtitles` files, in o
 
 ### 7.7 Plan output (dry and real runs)
 
+`Source` is the bare filename; `Target` is the **resolved absolute path**, because with a default output directory in play the destination is no longer obvious from the command line.
+
 ```
 Source:  Sample Video (2014) 1080p.mkv
-Target:  sample-video.mp4
+Target:  E:\Video\Converted\sample-video.mp4
 
 Video:   1920x1080 -> 1920x1080  (no scaling needed)
          h264 -> libx264 crf 22, profile standard, cap 8M
@@ -410,10 +437,12 @@ Subs:    0  rus subrip    -> mov_text
 
 ### 7.8 Worked example
 
-`nightmix-convert.ps1 -Audio "0" -Subtitles "0" -ExtraAudio "commentary.mka" video.mkv`:
+`nightmix-convert.ps1 -Audio "0" -Subtitles "0" -ExtraAudio "commentary.mka" video.mkv video.mp4`:
 
 ```
-ffmpeg -hide_banner
+ffmpeg -nostats
+  -loglevel error
+  -progress pipe:1
   -i "video.mkv"
   -i "commentary.mka"
   -filter_complex "[0:a:0]aformat=channel_layouts=stereo,dialoguenhance=original=1:enhance=1:voice=2,aformat=channel_layouts=stereo,acompressor=threshold=-21dB:ratio=4:attack=20:release=250:makeup=2,loudnorm=I=-18:TP=-1.5:LRA=11,alimiter=limit=0.95:level=disabled,aresample=48000[aout0];[1:a:0]aformat=channel_layouts=stereo,dialoguenhance=original=1:enhance=1:voice=2,aformat=channel_layouts=stereo,acompressor=threshold=-21dB:ratio=4:attack=20:release=250:makeup=2,loudnorm=I=-18:TP=-1.5:LRA=11,alimiter=limit=0.95:level=disabled,aresample=48000[aout1]"
@@ -447,11 +476,14 @@ nightmix-probe.ps1 "video.mkv"
 nightmix-convert.ps1 -Audio "0" -Subtitles "1" "video.mkv" "video.mp4"
 ```
 
+Setting `$DefaultOutputDirectory` (§4.4) changes only the last line's destination: results collect in one place while the `cd`-to-the-source workflow stays. `.\video.mp4` opts out for a single call.
+
 ### 8.2 `install.ps1`
 
 One-time (rerun after moving the repo):
 
 1. **Add `bin/` to user `PATH`**, no admin, idempotent (detect + replace a stale entry, never append twice). `bin/` only.
+1. **Create `config.ps1`** from `config.example.ps1` if it is absent; never overwrite an existing one, never delete it on `-Uninstall`.
 
    ```powershell
    $binPath = Join-Path $PSScriptRoot 'bin'
@@ -471,13 +503,27 @@ Optional (documented, off by default): add `.PS1` to `PATHEXT` to drop the `.ps1
 
 ### 8.4 Path resolution (common breakage)
 
-- `$PSScriptRoot` locates `lib/common.ps1` only — never resolve user paths against it.
-- All user paths (`-Source`, `-Target`, `-ExtraAudio`, `-ExtraSubtitles`, `-Directory`) are relative to the **current working directory**.
+- `$PSScriptRoot` locates `lib/common.ps1` and `config.ps1` only — never resolve user paths against it.
+- All user paths (`-Source`, `-Target`, `-ExtraAudio`, `-ExtraSubtitles`, `-Directory`) are relative to the **current working directory**, with the one exception below.
 - **Make every path absolute before ffmpeg.** `$PWD` and the .NET process cwd can diverge, so a relative path PowerShell resolves fine may resolve elsewhere in a child process. Use `(Resolve-Path $p).Path` for existing inputs, `[IO.Path]::GetFullPath((Join-Path $PWD $p))` for the not-yet-existing output. (Helpers in §4.3.)
+
+**Default output directory.** The exception, and it applies to outputs only (`-Target`, `-Result`) — never to inputs. The effective directory is `-OutputDirectory`, else `$DefaultOutputDirectory` (§4.4), else none. When one is in effect:
+
+| Target argument | Resolves to |
+| --- | --- |
+| `out.mp4` (bare filename) | `<directory>\out.mp4` |
+| `.\out.mp4` | current directory |
+| `sub\out.mp4` | `<cwd>\sub\out.mp4` |
+| `D:\x\out.mp4` | exactly that |
+| `C:out.mp4` (drive-relative) | taken literally — treated as carrying a path |
+
+The **shape of the argument** is the opt-in, not a separate switch: `.\` is already what a person types to mean "here", and a script passing a full path keeps working unchanged. With no directory in effect the first row falls back to the current directory — plain CLI behaviour.
+
+A configured directory that does not exist is an error (exit 1), not a silent `mkdir`: creating directories is a side effect nobody asked for. Resolution happens **before** the overwrite check (§3.3), so `-Force` can never guard one file and overwrite another.
 
 ### 8.5 README
 
-Short: what it does (both problems), prereqs (Windows, PS 5.1+, ffmpeg 6.0+ via scoop), `install.ps1`, the §8.1 example, a pointer to `common.ps1` for tuning, and a "still dropping frames? → `-VideoProfile light`" note.
+Short: what it does (both problems), prereqs (Windows, PS 5.1+, ffmpeg 6.0+ via scoop), `install.ps1`, the §8.1 example, a pointer to `config.ps1` for tuning and for the default output directory, and a "still dropping frames? → `-VideoProfile light`" note.
 
 ---
 
@@ -505,5 +551,6 @@ Short: what it does (both problems), prereqs (Windows, PS 5.1+, ffmpeg 6.0+ via 
 - Internal + external audio both get the full chain; tags survive, absent tags emit no flag; tagless external gets filename-stem title; output audio is 48 kHz not 192 kHz.
 - A source whose path contains Cyrillic characters and spaces converts successfully.
 - dvdmux `-DryRun` picks the main title and lists VOBs in order.
+- With no `config.ps1` present every script still runs, and a bare target lands in the current directory. With `$DefaultOutputDirectory` set, `out.mp4` lands there, `.\out.mp4` and `D:\x\out.mp4` do not, and `-OutputDirectory` beats the configured value. A directory that does not exist fails with exit 1 before anything is written. Both plans print the resolved absolute `Target`.
 - After install + new terminal, all three scripts run from an unrelated drive; running install twice doesn't duplicate the `PATH` entry; `lib/` is not on `PATH`.
 ```

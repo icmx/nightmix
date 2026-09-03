@@ -38,21 +38,22 @@ $AudioCodec      = 'aac'
 $AudioBitrate    = '192k'
 $AudioSampleRate = 48000
 
-# Filter chain (see 7.4)
-#
-# Alternative options for compressor/loudnorm
-# $Compressor      = 'acompressor=threshold=-28dB:ratio=6:attack=15:release=250:makeup=6'
-# $Loudnorm        = 'loudnorm=I=-45:TP=-2:LRA=6'
-#
+# Filter chain (see 7.4). Override $Compressor/$Loudnorm in config.ps1 rather
+# than here - config.example.ps1 explains the two knobs and lists alternatives.
 $StereoDownmix   = 'aformat=channel_layouts=stereo'
 $DialogueEnhance = 'dialoguenhance=original=1:enhance=1:voice=2'
-$Compressor      = 'acompressor=threshold=-28dB:ratio=6:attack=15:release=250:makeup=4'
-$Loudnorm        = 'loudnorm=I=-38:TP=-2:LRA=6'
+$Compressor      = 'acompressor=threshold=-21dB:ratio=4:attack=20:release=250:makeup=2'
+$Loudnorm        = 'loudnorm=I=-18:TP=-1.5:LRA=11'
 $Limiter         = 'alimiter=limit=0.95:level=disabled'
 
 # Container
 $SubtitleCodec = 'mov_text'
 $MovFlags      = '+faststart'
+
+# Output. Unset means the plain command-line behaviour: a bare target filename
+# lands in the current directory. Set it in config.ps1 (see 8.4) to send bare
+# filenames somewhere fixed instead; targets that carry a path are unaffected.
+$DefaultOutputDirectory = $null
 
 # Misc
 $NoneKeyword   = 'none'
@@ -243,11 +244,43 @@ function Resolve-InputPath {
     return $resolved.ProviderPath
 }
 
+# 8.4 Does this output argument carry a path, or is it a bare filename? A bare
+# name is the only form the default output directory applies to.
+function Test-PathHasDirectory {
+    param([Parameter(Mandatory)][string]$Path)
+    # A separator anywhere, or the drive-relative form ('C:out.mp4') which has
+    # no separator but is still a path.
+    # IndexOfAny, not a regex: a character class holding a backslash is a
+    # quoting trap that fails silently (it matches only the slash).
+    if ($Path.IndexOfAny([char[]]@([System.IO.Path]::DirectorySeparatorChar,
+                                   [System.IO.Path]::AltDirectorySeparatorChar)) -ge 0) { return $true }
+    return [bool]($Path -match '^[A-Za-z]:')
+}
+
 # 8.4 Output does not exist yet, so resolve against the current working
 # directory ($PWD.ProviderPath, not the process cwd, which can diverge).
+#
+# -Directory is -OutputDirectory or $DefaultOutputDirectory (4.1). It applies
+# ONLY to a bare filename: anything carrying a path - '.\out.mp4',
+# 'sub\out.mp4', 'D:\x\out.mp4' - is taken literally, so '.\' is how the caller
+# says "here, not there".
 function Resolve-OutputPath {
-    param([Parameter(Mandatory)][string]$Path)
-    $combined = [System.IO.Path]::Combine($PWD.ProviderPath, $Path)
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [string]$Directory
+    )
+
+    $base = $PWD.ProviderPath
+
+    if ($Directory -and -not (Test-PathHasDirectory $Path)) {
+        if (-not (Test-Path -LiteralPath $Directory -PathType Container)) {
+            throw (New-NightmixError ("output directory does not exist: $Directory`n" +
+                "Create it, or give the target a path of its own (.\$Path writes to the current directory).") 1)
+        }
+        $base = (Resolve-Path -LiteralPath $Directory).ProviderPath
+    }
+
+    $combined = [System.IO.Path]::Combine($base, $Path)
     return [System.IO.Path]::GetFullPath($combined)
 }
 
@@ -419,3 +452,17 @@ function Write-Plan {
     param([Parameter(Mandatory)][AllowEmptyString()][string[]]$Lines)
     foreach ($line in $Lines) { Write-Output $line }
 }
+
+# ---------------------------------------------------------------------------
+# Local overrides (config.ps1)
+# ---------------------------------------------------------------------------
+#
+# Dot-sourced LAST, so it can override anything above. Absent is a no-op - a
+# fresh clone works without it. See config.example.ps1 for what belongs here.
+$NightmixConfigPath = [System.IO.Path]::GetFullPath(
+    [System.IO.Path]::Combine($PSScriptRoot, '..', 'config.ps1'))
+
+if (Test-Path -LiteralPath $NightmixConfigPath) {
+    . $NightmixConfigPath
+}
+

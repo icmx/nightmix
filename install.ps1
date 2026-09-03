@@ -243,7 +243,26 @@ if (Get-Command ffmpeg -ErrorAction SilentlyContinue) {
     }
 }
 
-# --- 4. Next steps ---
+# --- 4. Local configuration ---
+
+Write-Step "4. Local configuration"
+$configPath   = Join-Path $repoRoot 'config.ps1'
+$templatePath = Join-Path $repoRoot 'config.example.ps1'
+
+if (Test-Path -LiteralPath $configPath) {
+    # Never touch an existing config - it holds the user's own settings.
+    Write-Ok "config.ps1 already exists - left untouched."
+} elseif (-not (Test-Path -LiteralPath $templatePath)) {
+    Write-Warn2 "config.example.ps1 not found at: $templatePath"
+} elseif ($DryRun) {
+    Write-Ok "would create config.ps1 from config.example.ps1"
+} else {
+    Copy-Item -LiteralPath $templatePath -Destination $configPath
+    Write-Ok "created config.ps1 from the template. Edit it to set a default"
+    Write-Ok "output directory or override the audio chain; it is not tracked by git."
+}
+
+# --- 5. Next steps ---
 
 Write-Step "Done$dryTag."
 if (-not $Scoop) {
