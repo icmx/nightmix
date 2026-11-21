@@ -22,14 +22,9 @@ $VideoProfiles = @{
 }
 $DefaultVideoProfile = 'standard'
 
-$VideoCodec        = 'libx264'
 $VideoPreset       = 'veryfast'
 $VideoTune         = 'fastdecode'
-$H264Profile       = 'high'
-$PixelFormat       = 'yuv420p'
 $MaxFrameRate      = 30          # peak cap, not forced CFR: 23.976 stays 23.976
-$GopSize           = 250
-$BFrames           = 2
 $DeinterlaceFilter = 'bwdif=mode=0'
 
 # Audio
@@ -46,22 +41,13 @@ $Compressor      = 'acompressor=threshold=-21dB:ratio=4:attack=20:release=250:ma
 $Loudnorm        = 'loudnorm=I=-18:TP=-1.5:LRA=11'
 $Limiter         = 'alimiter=limit=0.95:level=disabled'
 
-# Container
-$SubtitleCodec = 'mov_text'
-$MovFlags      = '+faststart'
-
 # Where a bare target filename lands; unset = current directory. See
 # Resolve-OutputPath.
 $DefaultOutputDirectory = $null
 
-# Misc
-$NoneKeyword   = 'none'
-$AllKeyword    = 'all'
-
 # Subtitle codecs that convert to mov_text. Anything else (PGS, VOBSUB, unknown)
 # is treated as image-based and skipped: feeding it to mov_text aborts the mux.
-$TextSubtitleCodecs  = @('subrip','srt','ass','ssa','mov_text','webvtt','text')
-$ImageSubtitleCodecs = @('hdmv_pgs_subtitle','dvd_subtitle','dvb_subtitle','xsub')
+$TextSubtitleCodecs = @('subrip','srt','ass','ssa','mov_text','webvtt','text')
 
 # ---------------------------------------------------------------------------
 # Probing
@@ -232,12 +218,10 @@ function Invoke-FFmpeg {
     # error. Failure is detected via $LASTEXITCODE instead.
     $ErrorActionPreference = 'Continue'
 
-    $tail      = New-Object System.Collections.Generic.Queue[string]
-    $secs      = 0.0
-    $speed     = ''
-    $lastShown = -1.0
-    $painted   = $false
-    $live      = -not [Console]::IsErrorRedirected   # repaint in place vs plain lines
+    $tail    = New-Object System.Collections.Generic.Queue[string]
+    $secs    = 0.0
+    $speed   = ''
+    $painted = $false
 
     & $FFmpegPath @full 2>&1 | ForEach-Object {
         # stderr = genuine log/error output; stdout = progress key=value lines.
@@ -276,17 +260,8 @@ function Invoke-FFmpeg {
                 }
             }
 
-            if ($live) {
-                [Console]::Error.Write("`r" + $text.PadRight(76))
-                $painted = $true
-            } else {
-                # Redirected: a plain line every 5% (or every media minute).
-                $mark = if ($TotalSeconds -gt 0) { [math]::Floor($secs * 20 / $TotalSeconds) } else { [math]::Floor($secs / 60) }
-                if ($mark -gt $lastShown) {
-                    [Console]::Error.WriteLine($text.Trim())
-                    $lastShown = $mark
-                }
-            }
+            [Console]::Error.Write("`r" + $text.PadRight(76))   # repaint in place
+            $painted = $true
         }
     }
     $code = $LASTEXITCODE

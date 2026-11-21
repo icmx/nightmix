@@ -77,10 +77,10 @@ function ConvertFrom-IndexSelector {
     )
 
     $trimmed = $Value.Trim()
-    if ($trimmed -ieq $NoneKeyword) { return @{ None = $true; All = $false; Indices = @() } }
-    if ($AllowAll -and $trimmed -ieq $AllKeyword) { return @{ None = $false; All = $true; Indices = @() } }
+    if ($trimmed -eq 'none') { return @{ None = $true; All = $false; Indices = @() } }
+    if ($AllowAll -and $trimmed -eq 'all') { return @{ None = $false; All = $true; Indices = @() } }
 
-    $keywords = if ($AllowAll) { "'$AllKeyword'/'$NoneKeyword'" } else { "'$NoneKeyword'" }
+    $keywords = if ($AllowAll) { "'all'/'none'" } else { "'none'" }
     $parts = @($trimmed -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
     $indices = @()
     foreach ($p in $parts) {
@@ -129,14 +129,14 @@ try {
 
     if (-not $audioProvided -and -not $ExtraAudio) {
         throw ("no audio selected. Specify -Audio with track indices, -ExtraAudio with`n" +
-            "an external file, or -Audio $NoneKeyword for a silent output.`n" +
+            "an external file, or -Audio none for a silent output.`n" +
             "Run nightmix-probe.ps1 `"$Source`" to see the available tracks.")
     }
 
     $audioSel = @{ None = $false; All = $false; Indices = @() }
     if ($audioProvided) { $audioSel = ConvertFrom-IndexSelector -Value $Audio -Option '-Audio' }
     if ($audioSel.None -and $ExtraAudio) {
-        throw "-Audio $NoneKeyword cannot be combined with -ExtraAudio."
+        throw "-Audio none cannot be combined with -ExtraAudio."
     }
 
     $subsProvided = $PSBoundParameters.ContainsKey('Subtitles')
@@ -368,22 +368,22 @@ try {
 
     # Video encoder, tuned for decode cost on weak hardware.
     $ff.AddRange([string[]]@(
-        '-c:v', $VideoCodec,
+        '-c:v', 'libx264',
         '-crf', "$($prof.Crf)",
         '-preset', $VideoPreset,
         '-tune', $VideoTune,                 # CAVLC, no deblocking: ~10-15% bitrate for a much cheaper decode
-        '-profile:v', $H264Profile,
+        '-profile:v', 'high',
         '-level', "$($prof.Level)",          # caps refs/buffers to what hardware decoders implement
         '-maxrate', "$($prof.MaxRate)",      # constrained CRF: plain CRF spikes in high motion,
         '-bufsize', "$($prof.BufSize)",      #   exactly where a weak decoder falls behind
-        '-g', "$GopSize",
-        '-bf', "$BFrames",                   # deep B-pyramids raise decode buffer needs
-        '-pix_fmt', $PixelFormat             # 8-bit: 10-bit is the usual outright-refusal cause
+        '-g', '250',
+        '-bf', '2',                          # deep B-pyramids raise decode buffer needs
+        '-pix_fmt', 'yuv420p'                # 8-bit: 10-bit is the usual outright-refusal cause
     ))
 
     # Only mapped streams are written, so no audio/subs needs no -an/-sn.
     if ($audioOutputs.Count -gt 0) { $ff.AddRange([string[]]@('-c:a', $AudioCodec, '-b:a', $AudioBitrate)) }
-    if ($subOutputs.Count -gt 0)   { $ff.AddRange([string[]]@('-c:s', $SubtitleCodec)) }
+    if ($subOutputs.Count -gt 0)   { $ff.AddRange([string[]]@('-c:s', 'mov_text')) }
 
     # filter_complex drops source tags; copy them back. Absent tags emit no flag.
     for ($n = 0; $n -lt $audioOutputs.Count; $n++) {
@@ -400,7 +400,7 @@ try {
     # first output audio is default
     if ($audioOutputs.Count -gt 0) { $ff.Add('-disposition:a:0'); $ff.Add('default') }
 
-    $ff.Add('-movflags'); $ff.Add($MovFlags)
+    $ff.Add('-movflags'); $ff.Add('+faststart')
     $ff.Add($targetAbs)
 
     # --- Plan (dry and real runs) ---
@@ -424,7 +424,7 @@ try {
         }
     }
     $plan.Add("Video:   ${srcW}x${srcH} -> $outDims  $scaleNote")
-    $plan.Add("         $($video.codec_name) -> $VideoCodec crf $($prof.Crf), profile $VideoProfile, cap $($prof.MaxRate)")
+    $plan.Add("         $($video.codec_name) -> libx264 crf $($prof.Crf), profile $VideoProfile, cap $($prof.MaxRate)")
     $fpsNote = if ($capped) { "capped to $MaxFrameRate" } else { "under $MaxFrameRate cap, unchanged" }
     $deintNote = if ($Deinterlace) { 'deinterlace' } else { 'no deinterlace' }
     $plan.Add("         $(Format-Fps $srcFps) fps ($fpsNote), $deintNote")
