@@ -1,22 +1,10 @@
-# config.example.ps1
+# Template for config.ps1 - your overrides of the defaults in lib/common.ps1.
+# install.ps1 copies it for you; config.ps1 is gitignored, this template is not
+# read by nightmix. Any constant from lib/common.ps1 can be overridden; the ones
+# below are the useful ones.
 #
-# Template for config.ps1 — your personal overrides of the defaults in
-# lib/common.ps1. Copy it (install.ps1 does this for you) and edit the copy:
-#
-#     Copy-Item config.example.ps1 config.ps1
-#
-# config.ps1 is NOT tracked by git, so your settings survive updates and never
-# turn into merge conflicts. This template IS tracked — it is documentation,
-# and nightmix never reads it.
-#
-# It is dot-sourced at the very END of lib/common.ps1, so anything set here
-# overrides the corresponding default. Every constant in section 4.1 of
-# docs/spec.md can be overridden this way; the ones below are the useful ones.
-#
-# This is ordinary PowerShell and it is executed, in the calling script's own
-# scope: put settings in it, nothing else. In particular, do not assign to
-# names a script uses for its own parameters ($Source, $Target, $Audio, ...) —
-# it is loaded after those are bound and would silently overwrite them.
+# It runs as PowerShell in the calling script's scope, after parameters are
+# bound: don't assign to parameter names ($Source, $Target, $Audio, ...).
 
 # ---------------------------------------------------------------------------
 # Default output directory
@@ -28,17 +16,13 @@
 #     nightmix-convert.ps1 -Audio 0 in.mkv .\out.mp4      -> current directory
 #     nightmix-convert.ps1 -Audio 0 in.mkv D:\x\out.mp4   -> exactly there
 #
-# Anything carrying a path separator is always taken literally, so '.\' is how
-# you say "no, right here". -OutputDirectory overrides this for a single run.
-# The directory must already exist — nightmix will not create it.
-#
-# Leave it unset to keep the plain command-line behaviour: bare names land in
-# the current directory.
+# -OutputDirectory overrides this for a single run. The directory must already
+# exist. Unset: bare names land in the current directory.
 
 # $DefaultOutputDirectory = 'E:\Video\Converted'
 
 # ---------------------------------------------------------------------------
-# Audio filter chain (docs/spec.md 7.4)
+# Audio filter chain
 # ---------------------------------------------------------------------------
 #
 # Level and character are separate knobs:

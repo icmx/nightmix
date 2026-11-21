@@ -1,15 +1,11 @@
-# lib/common.ps1
-#
-# Shared configuration constants and helper functions for the nightmix toolkit.
-# Dot-sourced by the bin/ entry points; never run directly.
-#
-# See docs/spec.md sections 4, 7.4, 8.4 and 9.
+# Shared constants and helpers. Dot-sourced by the bin/ scripts; never run directly.
+# Don't tune values here - override them in config.ps1 (loaded at the end).
 
 # Cyrillic track titles from ffprobe and Cyrillic paths need UTF-8.
 try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
 
 # ---------------------------------------------------------------------------
-# 4.1 Configuration constants
+# Configuration
 # ---------------------------------------------------------------------------
 
 # Tool paths
@@ -28,7 +24,7 @@ $VideoPreset       = 'veryfast'
 $VideoTune         = 'fastdecode'
 $H264Profile       = 'high'
 $PixelFormat       = 'yuv420p'
-$MaxFrameRate      = 30          # peak cap, not enforced CFR (see 7.3.2)
+$MaxFrameRate      = 30          # peak cap, not forced CFR: 23.976 stays 23.976
 $GopSize           = 250
 $BFrames           = 2
 $DeinterlaceFilter = 'bwdif=mode=0'
@@ -38,8 +34,9 @@ $AudioCodec      = 'aac'
 $AudioBitrate    = '192k'
 $AudioSampleRate = 48000
 
-# Filter chain (see 7.4). Override $Compressor/$Loudnorm in config.ps1 rather
-# than here - config.example.ps1 explains the two knobs and lists alternatives.
+# Audio filter chain, applied to every selected track. See the chain in
+# nightmix-convert.ps1 for the order and why it matters; config.example.ps1
+# explains the two knobs worth tuning ($Compressor, $Loudnorm).
 $StereoDownmix   = 'aformat=channel_layouts=stereo'
 $DialogueEnhance = 'dialoguenhance=original=1:enhance=1:voice=2'
 $Compressor      = 'acompressor=threshold=-21dB:ratio=4:attack=20:release=250:makeup=2'
@@ -50,31 +47,24 @@ $Limiter         = 'alimiter=limit=0.95:level=disabled'
 $SubtitleCodec = 'mov_text'
 $MovFlags      = '+faststart'
 
-# Output. Unset means the plain command-line behaviour: a bare target filename
-# lands in the current directory. Set it in config.ps1 (see 8.4) to send bare
-# filenames somewhere fixed instead; targets that carry a path are unaffected.
+# Where a bare target filename lands; unset = current directory. See
+# Resolve-OutputPath.
 $DefaultOutputDirectory = $null
 
 # Misc
 $NoneKeyword   = 'none'
 $AllKeyword    = 'all'
 
-# ---------------------------------------------------------------------------
-# 4.2 Codec classification
-# ---------------------------------------------------------------------------
-
+# Subtitle codecs that convert to mov_text. Anything else (PGS, VOBSUB, unknown)
+# is treated as image-based and skipped: feeding it to mov_text aborts the mux.
 $TextSubtitleCodecs  = @('subrip','srt','ass','ssa','mov_text','webvtt','text')
 $ImageSubtitleCodecs = @('hdmv_pgs_subtitle','dvd_subtitle','dvb_subtitle','xsub')
 
 # ---------------------------------------------------------------------------
-# Errors (3.4)
+# Errors
 # ---------------------------------------------------------------------------
 
-# We avoid a custom [class] because a type literal in a dot-sourced-only helper
-# would not resolve at parse time in the entry points. Instead we tag an
-# ordinary exception with an ExitCode in its Data dictionary; the entry point's
-# catch reads it to choose the process exit code (1 = usage/validation,
-# 2 = ffmpeg/ffprobe failure).
+# Exit code rides in the exception's Data (1 = usage/validation, 2 = ffmpeg/ffprobe).
 function New-NightmixError {
     param(
         [Parameter(Mandatory)][string]$Message,
@@ -125,7 +115,7 @@ function Get-JsonProperty {
 }
 
 # ---------------------------------------------------------------------------
-# 4.3 Required functions
+# Probing, paths, ffmpeg
 # ---------------------------------------------------------------------------
 
 function Assert-Tool {
@@ -171,8 +161,8 @@ function Get-StreamsByType {
     if (Test-JsonProperty -Object $MediaInfo -Name 'streams') {
         $streams = @($MediaInfo.streams | Where-Object { $_.codec_type -eq $Type })
     }
-    # Callers wrap the result in @() to guarantee an array for 0/1/many; do not
-    # add a unary comma here or that @() would nest an array inside an array.
+    # Array position is the per-type index. Callers wrap in @(); no unary comma
+    # here, or that @() would nest an array inside an array.
     return $streams
 }
 
@@ -192,9 +182,7 @@ function Get-StreamTag {
 function Get-StreamLanguage {
     param([Parameter(Mandatory)]$Stream)
     $lang = Get-StreamTag -Stream $Stream -Name 'language'
-    # MP4 always writes a language and defaults it to 'und' (undetermined);
-    # MKV leaves it absent. Treat 'und' as absent so both render blank and
-    # convert never emits a noise -metadata language=und flag.
+    # MP4 defaults to 'und'; MKV leaves it absent. Treat both as absent.
     if ($lang -and $lang.ToLowerInvariant() -eq 'und') { return $null }
     return $lang
 }
@@ -207,9 +195,7 @@ function Get-StreamTitle {
 function Get-ChannelLayoutLabel {
     param([Parameter(Mandatory)]$Stream)
 
-    # Prefer ffprobe's channel_layout, normalised: strip qualifiers like
-    # "5.1(side)" -> "5.1" and render the two word-named layouts numerically so
-    # the column reads uniformly (stereo -> 2.0), matching the probe example.
+    # Prefer ffprobe's channel_layout: "5.1(side)" -> "5.1", stereo -> 2.0.
     $layout = "$(Get-JsonProperty -Object $Stream -Name 'channel_layout')".Trim()
     if ($layout) {
         $layout = ($layout -replace '\(.*?\)\s*$', '')
@@ -232,9 +218,8 @@ function Get-ChannelLayoutLabel {
     }
 }
 
-
-# 8.4 Path resolution. Inputs must exist; use LiteralPath so spaces and
-# Cyrillic are safe. Returns a full absolute path for ffmpeg.
+# Every path handed to ffmpeg is made absolute first: $PWD and the process cwd
+# can diverge, so a relative path may resolve elsewhere in the child process.
 function Resolve-InputPath {
     param([Parameter(Mandatory)][string]$Path)
     $resolved = Resolve-Path -LiteralPath $Path -ErrorAction SilentlyContinue
@@ -244,12 +229,10 @@ function Resolve-InputPath {
     return $resolved.ProviderPath
 }
 
-# 8.4 Does this output argument carry a path, or is it a bare filename? A bare
-# name is the only form the default output directory applies to.
+# Does this output argument carry a path (a separator anywhere, or drive-relative
+# 'C:out.mp4'), or is it a bare filename?
 function Test-PathHasDirectory {
     param([Parameter(Mandatory)][string]$Path)
-    # A separator anywhere, or the drive-relative form ('C:out.mp4') which has
-    # no separator but is still a path.
     # IndexOfAny, not a regex: a character class holding a backslash is a
     # quoting trap that fails silently (it matches only the slash).
     if ($Path.IndexOfAny([char[]]@([System.IO.Path]::DirectorySeparatorChar,
@@ -257,13 +240,9 @@ function Test-PathHasDirectory {
     return [bool]($Path -match '^[A-Za-z]:')
 }
 
-# 8.4 Output does not exist yet, so resolve against the current working
-# directory ($PWD.ProviderPath, not the process cwd, which can diverge).
-#
-# -Directory is -OutputDirectory or $DefaultOutputDirectory (4.1). It applies
-# ONLY to a bare filename: anything carrying a path - '.\out.mp4',
-# 'sub\out.mp4', 'D:\x\out.mp4' - is taken literally, so '.\' is how the caller
-# says "here, not there".
+# -Directory (-OutputDirectory or $DefaultOutputDirectory) applies ONLY to a bare
+# filename; '.\out.mp4', 'sub\out.mp4', 'D:\x\out.mp4' are taken literally, so
+# '.\' means "here". A missing directory is an error, never a silent mkdir.
 function Resolve-OutputPath {
     param(
         [Parameter(Mandatory)][string]$Path,
@@ -284,9 +263,8 @@ function Resolve-OutputPath {
     return [System.IO.Path]::GetFullPath($combined)
 }
 
-# 3.3 Pretty-print an ffmpeg command for -DryRun: one argument group per line,
-# copy-pasteable, never abbreviated. A "group" is a flag plus its trailing
-# non-flag operands, quoting any token that needs it.
+# Pretty-print an ffmpeg command for -DryRun: copy-pasteable, one flag plus its
+# operands per line.
 function Format-FFmpegCommand {
     param([Parameter(Mandatory)][string[]]$Arguments)
 
@@ -333,12 +311,9 @@ $ProgressFlags = @('-nostats', '-loglevel', 'error', '-progress', 'pipe:1')
 # output. Listed explicitly so a genuine error line is never swallowed.
 $ProgressKeyPattern = '^(frame|fps|bitrate|total_size|out_time_us|out_time_ms|dup_frames|drop_frames|stream_[0-9_]+q)='
 
-# 4.3 The single execution point for ffmpeg.
-#
-# Quietens ffmpeg and drives a compact one-line readout from its -progress
-# stream. $TotalSeconds (the source duration, which ffmpeg's own output never
-# shows) turns that into a percentage and an ETA; omit it and the line falls
-# back to elapsed media time plus speed.
+# The single execution point for ffmpeg. Silences ffmpeg and renders one
+# progress line from its -progress stream; $TotalSeconds (source duration)
+# adds percentage and ETA. -DryRun prints the command, progress flags included.
 function Invoke-FFmpeg {
     param(
         [Parameter(Mandatory)][string[]]$Arguments,
@@ -346,8 +321,6 @@ function Invoke-FFmpeg {
         [switch]$DryRun
     )
 
-    # The progress flags are part of the command we print, so -DryRun shows
-    # exactly what a real run executes.
     $full = @($ProgressFlags + $Arguments)
 
     if ($DryRun) {
@@ -355,30 +328,21 @@ function Invoke-FFmpeg {
         return
     }
 
-    # Splat the array through the call operator so each element is passed as one
-    # argument (correct quoting) rather than reassembling a command string.
-    #
-    # 2>&1 merges stderr into the pipeline. Under $ErrorActionPreference =
-    # 'Stop' (set by the entry points) that would wrap ffmpeg's first stderr
-    # line in a terminating NativeCommandError and abort. Force 'Continue'
-    # locally; real failure is detected via $LASTEXITCODE below.
+    # Under 'Stop', 2>&1 turns ffmpeg's first stderr line into a terminating
+    # error. Failure is detected via $LASTEXITCODE instead.
     $ErrorActionPreference = 'Continue'
 
     $tail      = New-Object System.Collections.Generic.Queue[string]
     $speed     = ''
     $lastShown = -1.0
     $painted   = $false
-    # Overwrite one line in place on a console; when redirected, emit occasional
-    # plain lines instead so logs stay readable.
-    $live      = -not [Console]::IsErrorRedirected
+    $live      = -not [Console]::IsErrorRedirected   # repaint in place vs plain lines
 
     & $FFmpegPath @full 2>&1 | ForEach-Object {
         $line = if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.ToString() } else { "$_" }
 
         if ($line -match '^speed=\s*(.+?)\s*$') {
-            # ffmpeg reports speed=N/A until it has a measurement; show nothing
-            # rather than "speed N/A".
-            $v = $Matches[1]
+            $v = $Matches[1]   # N/A until ffmpeg has a measurement
             $speed = if ($v -match '^[0-9.]+x$') { $v } else { '' }
             return
         }
@@ -405,9 +369,7 @@ function Invoke-FFmpeg {
                 [Console]::Error.Write("`r" + $text.PadRight(76))
                 $painted = $true
             } else {
-                # Redirected: emit occasional plain lines instead of repainting.
-                # Step by 5% when the total is known (~20 lines whatever the
-                # length), otherwise once a minute of media time.
+                # Redirected: a plain line every 5% (or every media minute).
                 $mark = if ($TotalSeconds -gt 0) { [math]::Floor($secs * 20 / $TotalSeconds) } else { [math]::Floor($secs / 60) }
                 if ($mark -gt $lastShown) {
                     [Console]::Error.WriteLine($text.Trim())
@@ -444,21 +406,12 @@ function Invoke-FFmpeg {
     }
 }
 
-# 4.3 Consistent plan-block formatting (used by -DryRun and the real-run
-# pre-flight summary).
 function Write-Plan {
-    # AllowEmptyString so blank separator lines in a plan are permitted; a
-    # Mandatory [string[]] otherwise rejects any array containing an empty string.
     param([Parameter(Mandatory)][AllowEmptyString()][string[]]$Lines)
     foreach ($line in $Lines) { Write-Output $line }
 }
 
-# ---------------------------------------------------------------------------
-# Local overrides (config.ps1)
-# ---------------------------------------------------------------------------
-#
-# Dot-sourced LAST, so it can override anything above. Absent is a no-op - a
-# fresh clone works without it. See config.example.ps1 for what belongs here.
+# Local overrides: dot-sourced last so they win; absent is fine.
 $NightmixConfigPath = [System.IO.Path]::GetFullPath(
     [System.IO.Path]::Combine($PSScriptRoot, '..', 'config.ps1'))
 

@@ -43,7 +43,6 @@ param(
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot '..\lib\common.ps1')
 
-# Title-table size format: gibibytes, 2 decimals, invariant (dot) — matches §6.2.
 function Format-GiB {
     param([double]$Bytes)
     return ([string]::Format([System.Globalization.CultureInfo]::InvariantCulture, '{0:0.00} GB', ($Bytes / 1GB)))
@@ -63,28 +62,22 @@ try {
     } elseif (Test-Path -LiteralPath (Join-Path $dirAbs 'VIDEO_TS') -PathType Container) {
         $vtsDir = (Join-Path $dirAbs 'VIDEO_TS')
     } else {
-        # No VIDEO_TS subfolder and not named VIDEO_TS — accept a folder that
-        # holds the VOBs directly; fail later if there are none.
-        $vtsDir = $dirAbs
+        $vtsDir = $dirAbs   # a folder holding the VOBs directly
     }
 
-    # --- Resolve the result path ---
-    # A bare result filename may be redirected to a configured directory;
-    # -OutputDirectory beats config.ps1, and a result carrying a path beats both.
     $outDir = if ($OutputDirectory) { $OutputDirectory } else { $DefaultOutputDirectory }
     $targetAbs = Resolve-OutputPath -Path $Result -Directory $outDir
 
     $targetExists = Test-Path -LiteralPath $targetAbs
     $existsNeedsForce = $false
     if ($targetExists -and -not $Force) {
-        # A real run refuses to overwrite; a -DryRun still previews the command.
         if (-not $DryRun) {
             throw (New-NightmixError "result already exists: $targetAbs (use -Force to overwrite)." 1)
         }
         $existsNeedsForce = $true
     }
 
-    # --- Enumerate VTS_<NN>_<M>.VOB and group by NN (6.2) ---
+    # --- Group VTS_<NN>_<M>.VOB by title NN; the largest group is the main title ---
     $vobs = @(Get-ChildItem -LiteralPath $vtsDir -File -Filter 'VTS_*.VOB' -ErrorAction SilentlyContinue)
     $groups = @{}
     foreach ($f in $vobs) {
@@ -101,10 +94,8 @@ try {
         throw (New-NightmixError "no VTS_<NN>_<M>.VOB content files found in: $vtsDir" 1)
     }
 
-    # --- Pick the largest group; order its files by M ---
-    # @() is required: with a single group this would be one PSCustomObject
-    # whose own 'Count' property (its file count) would shadow the collection
-    # count, making the report say "Found 2 titles" for one 2-file title.
+    # @() is required: with a single group, that object's own Count property
+    # would shadow the collection count.
     $summaries = @(foreach ($nn in ($groups.Keys | Sort-Object)) {
         $files = @($groups[$nn] | Sort-Object M)
         [pscustomobject]@{
@@ -116,7 +107,6 @@ try {
     })
     $selected = $summaries | Sort-Object Total -Descending | Select-Object -First 1
 
-    # --- Report the decision (both dry and real runs) ---
     $report = New-Object System.Collections.Generic.List[string]
     $report.Add("Found $($summaries.Count) title$(if ($summaries.Count -ne 1) { 's' }):")
     foreach ($g in $summaries) {
@@ -126,8 +116,6 @@ try {
     }
     $report.Add('')
     $report.Add("Source:  $vtsDir")
-    # Full path, not just the name: with a default output directory in play the
-    # destination is no longer obvious from the command line.
     $report.Add("Target:  $targetAbs")
     Write-Plan -Lines $report.ToArray()
 
@@ -141,14 +129,13 @@ try {
     }
     Write-Output ''
 
-    # --- Build the concat input and ffmpeg command (6.3) ---
+    # VOB is MPEG-PS, so plain byte concatenation (concat: protocol) works.
     $concatInput = 'concat:' + (($selected.Files | ForEach-Object { $_.File.FullName }) -join '|')
 
     $ff = New-Object System.Collections.Generic.List[string]
-    # (banner and stream dumps are suppressed by the -loglevel flag Invoke-FFmpeg adds)
     if ($targetExists -and $Force) { $ff.Add('-y') }
-    # Large probe window is required: concat: probes only the start, so subtitle
-    # streams that first appear later would otherwise be missed.
+    # Large probe window: concat: probes only the start, so subtitle streams
+    # that first appear later would otherwise be missed.
     $ff.AddRange([string[]]@('-analyzeduration', '200M', '-probesize', '200M'))
     $ff.AddRange([string[]]@('-i', $concatInput))
     $ff.AddRange([string[]]@('-map', '0', '-c', 'copy', '-f', 'matroska'))

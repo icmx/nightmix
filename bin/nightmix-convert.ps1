@@ -8,7 +8,7 @@ Re-encodes video to constrained-CRF H.264 (8-bit, capped resolution/frame rate)
 and runs every selected audio track through a fixed filter chain that downmixes
 to stereo, enhances dialogue, compresses dynamics, normalises loudness and
 limits peaks. Subtitles are re-encoded to mov_text; image-based subtitles are
-skipped. See docs/spec.md section 7.
+skipped.
 
 Audio selection is mandatory: pass -Audio with indices, -ExtraAudio with a file,
 or -Audio none for a silent output.
@@ -67,10 +67,8 @@ $ErrorActionPreference = 'Stop'
 # Helpers
 # ---------------------------------------------------------------------------
 
-# Parse a "-Audio"/"-Subtitles" selector into
-# @{ None = bool; All = bool; Indices = int[] }.
-# 'all' is only accepted with -AllowAll (subtitles); audio must be chosen
-# explicitly, so it has no bulk keyword.
+# Parse "-Audio"/"-Subtitles" into @{ None; All; Indices }. 'all' only with
+# -AllowAll (subtitles): audio must always be chosen explicitly.
 function ConvertFrom-IndexSelector {
     param(
         [Parameter(Mandatory)][string]$Value,
@@ -122,7 +120,6 @@ function Add-Note { param([string]$Text) $Notes.Add($Text) }
 # ---------------------------------------------------------------------------
 
 try {
-    # --- 0. Resolve defaults / static config ---
     if (-not $VideoProfile) { $VideoProfile = $DefaultVideoProfile }
     if (-not ($VideoProfiles.Keys -contains $VideoProfile)) {
         $valid = ($VideoProfiles.Keys | Sort-Object) -join ', '
@@ -130,11 +127,10 @@ try {
     }
     $prof = $VideoProfiles[$VideoProfile]
 
-    # --- 1. Validate tools ---
     Assert-Tool $FFmpegPath
     Assert-Tool $FFprobePath
 
-    # --- 1a. Parse selectors ---
+    # --- Selectors ---
     $audioProvided = $PSBoundParameters.ContainsKey('Audio')
     $hasExtraAudio = ($ExtraAudio -and $ExtraAudio.Count -gt 0)
     $hasExtraSubs  = ($ExtraSubtitles -and $ExtraSubtitles.Count -gt 0)
@@ -153,29 +149,26 @@ try {
     }
 
     $subsProvided = $PSBoundParameters.ContainsKey('Subtitles')
-    # Subtitles are opt-in: omitting -Subtitles means none. Use -Subtitles all
-    # for every internal text subtitle.
+    # Subtitles are opt-in: omitting -Subtitles means none.
     $subsSel = @{ None = $true; All = $false; Indices = @() }
     if ($subsProvided) { $subsSel = ConvertFrom-IndexSelector -Value $Subtitles -Option '-Subtitles' -AllowAll }
 
-    # --- 1b. Resolve source and target paths ---
+    # --- Paths ---
     $sourceAbs = Resolve-InputPath $Source
 
-    # A bare target filename may be redirected to a configured directory;
-    # -OutputDirectory beats config.ps1, and a target carrying a path beats both.
+    # Resolved before the overwrite check, so -Force guards the file actually written.
     $outDir = if ($OutputDirectory) { $OutputDirectory } else { $DefaultOutputDirectory }
     $targetAbs = Resolve-OutputPath -Path $Target -Directory $outDir
 
     $targetExists = Test-Path -LiteralPath $targetAbs
     if ($targetExists -and -not $Force) {
-        # A real run refuses to overwrite; a -DryRun still previews the command.
         if (-not $DryRun) {
             throw (New-NightmixError "target already exists: $targetAbs (use -Force to overwrite)." 1)
         }
         Add-Note "Note: target exists; a real run would need -Force to overwrite it."
     }
 
-    # --- 2. Probe source ---
+    # --- Probe ---
     $info = Get-MediaInfo -Path $sourceAbs
     $srcVideo = @(Get-StreamsByType -MediaInfo $info -Type 'video')
     $srcAudio = @(Get-StreamsByType -MediaInfo $info -Type 'audio')
@@ -186,14 +179,13 @@ try {
     }
     $video = $srcVideo[0]
 
-    # Source duration drives the progress percentage/ETA (ffmpeg's own output
-    # reports elapsed media time but never the total).
+    # Source duration drives the progress percentage/ETA.
     $durationSeconds = 0
     $durRaw = Get-JsonProperty -Object $info.format -Name 'duration'
     if (-not $durRaw) { $durRaw = Get-JsonProperty -Object $video -Name 'duration' }
     if ($durRaw) { try { $durationSeconds = ConvertTo-InvariantDouble "$durRaw" } catch { $durationSeconds = 0 } }
 
-    # --- 2a. Validate internal audio indices ---
+    # --- Validate indices ---
     if (-not $audioSel.None) {
         foreach ($idx in $audioSel.Indices) {
             if ($idx -ge $srcAudio.Count) {
@@ -203,7 +195,6 @@ try {
         }
     }
 
-    # --- 2b. Validate internal subtitle indices (explicit only) ---
     if ($subsProvided -and -not $subsSel.None -and -not $subsSel.All) {
         foreach ($idx in $subsSel.Indices) {
             if ($idx -ge $srcSubs.Count) {
@@ -213,7 +204,7 @@ try {
         }
     }
 
-    # --- 2c. Build the ordered input list (6): source, extra audio, extra subs ---
+    # --- Inputs, in order: source (0), extra audio, extra subs ---
     $inputPaths = New-Object System.Collections.Generic.List[string]
     $inputPaths.Add($sourceAbs)
 
@@ -262,9 +253,8 @@ try {
         }
     }
 
-    # --- 3. Resolve selections into concrete output tracks ---
+    # --- Output tracks: internal (index order), then external (command-line order) ---
 
-    # Audio outputs: internal (index order) then external (command-line order).
     $audioOutputs = @()
     if (-not $audioSel.None) {
         foreach ($idx in $audioSel.Indices) {
@@ -298,9 +288,7 @@ try {
     $assWarned = $false
     if (-not $subsSel.None) {
         if ($subsSel.All) {
-            # 'all' means every internal TEXT subtitle. Image-based ones can
-            # never go into MP4, so they are simply not eligible here — no
-            # per-track warning, since the user asked for a bulk selection.
+            # Every internal TEXT subtitle; image-based ones silently excluded.
             $subIdxList = @()
             for ($i = 0; $i -lt $srcSubs.Count; $i++) {
                 $c = "$(Get-JsonProperty -Object $srcSubs[$i] -Name 'codec_name')"
@@ -315,8 +303,6 @@ try {
             $codec = "$(Get-JsonProperty -Object $s -Name 'codec_name')"
             $isImage = -not ($TextSubtitleCodecs -contains $codec)
             if ($isImage) {
-                # Only reachable for explicitly requested indices; 'all' filtered
-                # image codecs out above.
                 Add-Note "Skipping subtitle $idx ($codec): image-based, not supported in MP4."
                 $subPlan += ('{0}  {1} {2}' -f $idx, (Get-StreamLanguage $s), $codec).Trim() + '  -> SKIPPED (image-based)'
                 continue
@@ -342,23 +328,23 @@ try {
         $subPlan += ('+ {0}  -> mov_text' -f $es.FileName)
     }
 
-    # --- 5. Build the ffmpeg command (string[] to splat) ---
+    # --- ffmpeg command (string[] splatted: filter_complex and Cyrillic paths
+    #     would break a single command string) ---
     $ff = New-Object System.Collections.Generic.List[string]
-    # (banner and stream dumps are suppressed by the -loglevel flag Invoke-FFmpeg adds)
     if ($targetExists -and $Force) { $ff.Add('-y') }
 
     foreach ($ip in $inputPaths) { $ff.Add('-i'); $ff.Add($ip) }
 
-    # filter_complex (audio only)
+    # Audio chain, one filter_complex branch per track. Order matters:
     if ($audioOutputs.Count -gt 0) {
         $audioChain = @(
-            $StereoDownmix,                 # downmix to stereo (dialoguenhance needs stereo in)
-            $DialogueEnhance,
-            $StereoDownmix,                 # fold enhanced centre back into L/R (dialoguenhance emits 3.0)
-            $Compressor,
-            $Loudnorm,
-            $Limiter,
-            "aresample=$AudioSampleRate"
+            $StereoDownmix,     # dialoguenhance accepts stereo only (errors on 5.1)
+            $DialogueEnhance,   # boosts the centre (dialogue); ffmpeg 6.0+; emits 3.0
+            $StereoDownmix,     # fold that centre back into L/R: output must be true stereo
+            $Compressor,        # the actual DRC; makeup is a linear multiplier, not dB
+            $Loudnorm,          # average-loudness normaliser, so after the compressor
+            $Limiter,           # peak ceiling; level=disabled or it undoes loudnorm
+            "aresample=$AudioSampleRate"   # loudnorm outputs 192 kHz internally
         ) -join ','
         $branches = @()
         for ($n = 0; $n -lt $audioOutputs.Count; $n++) {
@@ -378,7 +364,7 @@ try {
         else { $ff.Add('-map'); $ff.Add("$($so.InputIndex):s:0") }
     }
 
-    # video filter chain: [deinterlace,] scale, [fps]
+    # Video filters: [deinterlace,] scale, [fps]. min() prevents upscaling.
     $sizeParts = $prof.Size -split 'x'
     $boxW = [int]$sizeParts[0]; $boxH = [int]$sizeParts[1]
     $scaleFilter = "scale='min(iw,$boxW)':'min(ih,$boxH)':force_original_aspect_ratio=decrease:force_divisible_by=2"
@@ -391,19 +377,19 @@ try {
     if ($capped) { $vfStages += "fps=$MaxFrameRate" }
     $ff.Add('-vf'); $ff.Add(($vfStages -join ','))
 
-    # video encoder
+    # Video encoder, tuned for decode cost on weak hardware.
     $ff.AddRange([string[]]@(
         '-c:v', $VideoCodec,
         '-crf', "$($prof.Crf)",
         '-preset', $VideoPreset,
-        '-tune', $VideoTune,
+        '-tune', $VideoTune,                 # CAVLC, no deblocking: ~10-15% bitrate for a much cheaper decode
         '-profile:v', $H264Profile,
-        '-level', "$($prof.Level)",
-        '-maxrate', "$($prof.MaxRate)",
-        '-bufsize', "$($prof.BufSize)",
+        '-level', "$($prof.Level)",          # caps refs/buffers to what hardware decoders implement
+        '-maxrate', "$($prof.MaxRate)",      # constrained CRF: plain CRF spikes in high motion,
+        '-bufsize', "$($prof.BufSize)",      #   exactly where a weak decoder falls behind
         '-g', "$GopSize",
-        '-bf', "$BFrames",
-        '-pix_fmt', $PixelFormat
+        '-bf', "$BFrames",                   # deep B-pyramids raise decode buffer needs
+        '-pix_fmt', $PixelFormat             # 8-bit: 10-bit is the usual outright-refusal cause
     ))
 
     # audio / subtitle codecs (or disable)
@@ -418,7 +404,7 @@ try {
         $ff.Add('-sn')
     }
 
-    # metadata (copy only; absent tags emit no flag)
+    # filter_complex drops source tags; copy them back. Absent tags emit no flag.
     for ($n = 0; $n -lt $audioOutputs.Count; $n++) {
         $o = $audioOutputs[$n]
         if ($o.Lang)  { $ff.Add("-metadata:s:a:$n"); $ff.Add("language=$($o.Lang)") }
@@ -436,11 +422,9 @@ try {
     $ff.Add('-movflags'); $ff.Add($MovFlags)
     $ff.Add($targetAbs)
 
-    # --- 4. Report the plan (both dry and real runs) ---
+    # --- Plan (dry and real runs) ---
     $plan = New-Object System.Collections.Generic.List[string]
     $plan.Add("Source:  $([System.IO.Path]::GetFileName($sourceAbs))")
-    # Full path, not just the name: with a default output directory in play the
-    # destination is no longer obvious from the command line.
     $plan.Add("Target:  $targetAbs")
     $plan.Add('')
 
@@ -488,13 +472,11 @@ try {
         foreach ($row in $subPlan) { $plan.Add("  $row") }
     }
 
-    # Print notes (warnings), then the plan.
     foreach ($note in $Notes) { Write-Output $note }
     if ($Notes.Count -gt 0) { Write-Output '' }
     Write-Plan -Lines $plan.ToArray()
     Write-Output ''
 
-    # --- 6. Execute (or print command on -DryRun) ---
     Invoke-FFmpeg -Arguments $ff.ToArray() -TotalSeconds $durationSeconds -DryRun:$DryRun
 
     if (-not $DryRun) { Write-Output "Done. -> $targetAbs" }
