@@ -49,12 +49,10 @@ function Format-GiB {
 }
 
 try {
-    Assert-Tool $FFmpegPath
-
     # --- Resolve the directory and locate VIDEO_TS ---
     $dirAbs = Resolve-InputPath $Directory
     if (-not (Test-Path -LiteralPath $dirAbs -PathType Container)) {
-        throw (New-NightmixError "not a directory: $dirAbs" 1)
+        throw "not a directory: $dirAbs"
     }
 
     if ((Split-Path $dirAbs -Leaf) -ieq 'VIDEO_TS') {
@@ -72,7 +70,7 @@ try {
     $existsNeedsForce = $false
     if ($targetExists -and -not $Force) {
         if (-not $DryRun) {
-            throw (New-NightmixError "result already exists: $targetAbs (use -Force to overwrite)." 1)
+            throw "result already exists: $targetAbs (use -Force to overwrite)."
         }
         $existsNeedsForce = $true
     }
@@ -91,7 +89,7 @@ try {
     }
 
     if ($groups.Count -eq 0) {
-        throw (New-NightmixError "no VTS_<NN>_<M>.VOB content files found in: $vtsDir" 1)
+        throw "no VTS_<NN>_<M>.VOB content files found in: $vtsDir"
     }
 
     # @() is required: with a single group, that object's own Count property
@@ -117,7 +115,7 @@ try {
     $report.Add('')
     $report.Add("Source:  $vtsDir")
     $report.Add("Target:  $targetAbs")
-    Write-Plan -Lines $report.ToArray()
+    $report
 
     if ($selected.Total -lt 100MB) {
         Write-Output ''
@@ -133,7 +131,7 @@ try {
     $concatInput = 'concat:' + (($selected.Files | ForEach-Object { $_.File.FullName }) -join '|')
 
     $ff = New-Object System.Collections.Generic.List[string]
-    if ($targetExists -and $Force) { $ff.Add('-y') }
+    if ($Force) { $ff.Add('-y') }
     # Large probe window: concat: probes only the start, so subtitle streams
     # that first appear later would otherwise be missed.
     $ff.AddRange([string[]]@('-analyzeduration', '200M', '-probesize', '200M'))
@@ -152,5 +150,5 @@ try {
     exit 0
 } catch {
     [Console]::Error.WriteLine("Error: $($_.Exception.Message)")
-    exit (Get-NightmixExitCode $_)
+    exit 1
 }

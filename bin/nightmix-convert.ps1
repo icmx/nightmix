@@ -84,11 +84,8 @@ function ConvertFrom-IndexSelector {
     $parts = @($trimmed -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
     $indices = @()
     foreach ($p in $parts) {
-        if ($p -eq '-1') {
-            throw (New-NightmixError "$Option -1 is not valid. Use '$Option $NoneKeyword' for no streams of this type." 1)
-        }
         if ($p -notmatch '^\d+$') {
-            throw (New-NightmixError "$Option has an invalid index '$p'. Use comma-separated 0-based numbers, or $keywords." 1)
+            throw "$Option has an invalid index '$p'. Use comma-separated 0-based numbers, or $keywords."
         }
         $indices += [int]$p
     }
@@ -123,29 +120,23 @@ try {
     if (-not $VideoProfile) { $VideoProfile = $DefaultVideoProfile }
     if (-not ($VideoProfiles.Keys -contains $VideoProfile)) {
         $valid = ($VideoProfiles.Keys | Sort-Object) -join ', '
-        throw (New-NightmixError "-VideoProfile '$VideoProfile' is unknown. Valid profiles: $valid." 1)
+        throw "-VideoProfile '$VideoProfile' is unknown. Valid profiles: $valid."
     }
     $prof = $VideoProfiles[$VideoProfile]
 
-    Assert-Tool $FFmpegPath
-    Assert-Tool $FFprobePath
-
     # --- Selectors ---
     $audioProvided = $PSBoundParameters.ContainsKey('Audio')
-    $hasExtraAudio = ($ExtraAudio -and $ExtraAudio.Count -gt 0)
-    $hasExtraSubs  = ($ExtraSubtitles -and $ExtraSubtitles.Count -gt 0)
 
-    if (-not $audioProvided -and -not $hasExtraAudio) {
-        throw (New-NightmixError (
-            "no audio selected. Specify -Audio with track indices, -ExtraAudio with`n" +
+    if (-not $audioProvided -and -not $ExtraAudio) {
+        throw ("no audio selected. Specify -Audio with track indices, -ExtraAudio with`n" +
             "an external file, or -Audio $NoneKeyword for a silent output.`n" +
-            "Run nightmix-probe.ps1 `"$Source`" to see the available tracks.") 1)
+            "Run nightmix-probe.ps1 `"$Source`" to see the available tracks.")
     }
 
     $audioSel = @{ None = $false; All = $false; Indices = @() }
     if ($audioProvided) { $audioSel = ConvertFrom-IndexSelector -Value $Audio -Option '-Audio' }
-    if ($audioSel.None -and $hasExtraAudio) {
-        throw (New-NightmixError "-Audio $NoneKeyword cannot be combined with -ExtraAudio." 1)
+    if ($audioSel.None -and $ExtraAudio) {
+        throw "-Audio $NoneKeyword cannot be combined with -ExtraAudio."
     }
 
     $subsProvided = $PSBoundParameters.ContainsKey('Subtitles')
@@ -163,7 +154,7 @@ try {
     $targetExists = Test-Path -LiteralPath $targetAbs
     if ($targetExists -and -not $Force) {
         if (-not $DryRun) {
-            throw (New-NightmixError "target already exists: $targetAbs (use -Force to overwrite)." 1)
+            throw "target already exists: $targetAbs (use -Force to overwrite)."
         }
         Add-Note "Note: target exists; a real run would need -Force to overwrite it."
     }
@@ -175,31 +166,30 @@ try {
     $srcSubs  = @(Get-StreamsByType -MediaInfo $info -Type 'subtitle')
 
     if ($srcVideo.Count -eq 0) {
-        throw (New-NightmixError "source has no video stream: $sourceAbs (this is not an audio converter)." 1)
+        throw "source has no video stream: $sourceAbs (this is not an audio converter)."
     }
     $video = $srcVideo[0]
 
     # Source duration drives the progress percentage/ETA.
-    $durationSeconds = 0
-    $durRaw = Get-JsonProperty -Object $info.format -Name 'duration'
-    if (-not $durRaw) { $durRaw = Get-JsonProperty -Object $video -Name 'duration' }
-    if ($durRaw) { try { $durationSeconds = ConvertTo-InvariantDouble "$durRaw" } catch { $durationSeconds = 0 } }
+    $durRaw = $info.format.duration
+    if (-not $durRaw) { $durRaw = $video.duration }
+    $durationSeconds = [double]$durRaw
 
     # --- Validate indices ---
     if (-not $audioSel.None) {
         foreach ($idx in $audioSel.Indices) {
             if ($idx -ge $srcAudio.Count) {
                 $hi = [math]::Max($srcAudio.Count - 1, 0)
-                throw (New-NightmixError "-Audio requested index $idx, but the source has $($srcAudio.Count) audio track(s) (0..$hi)." 1)
+                throw "-Audio requested index $idx, but the source has $($srcAudio.Count) audio track(s) (0..$hi)."
             }
         }
     }
 
-    if ($subsProvided -and -not $subsSel.None -and -not $subsSel.All) {
+    if (-not $subsSel.None -and -not $subsSel.All) {
         foreach ($idx in $subsSel.Indices) {
             if ($idx -ge $srcSubs.Count) {
                 $hi = [math]::Max($srcSubs.Count - 1, 0)
-                throw (New-NightmixError "-Subtitles requested index $idx, but the source has $($srcSubs.Count) subtitle track(s) (0..$hi)." 1)
+                throw "-Subtitles requested index $idx, but the source has $($srcSubs.Count) subtitle track(s) (0..$hi)."
             }
         }
     }
@@ -209,12 +199,12 @@ try {
     $inputPaths.Add($sourceAbs)
 
     $extraAudioInfos = @()
-    foreach ($p in @($ExtraAudio | Where-Object { $_ })) {
+    foreach ($p in $ExtraAudio) {
         $abs = Resolve-InputPath $p
         $eInfo = Get-MediaInfo -Path $abs
         $eAudio = @(Get-StreamsByType -MediaInfo $eInfo -Type 'audio')
         if ($eAudio.Count -eq 0) {
-            throw (New-NightmixError "external audio file has no audio stream: $abs" 1)
+            throw "external audio file has no audio stream: $abs"
         }
         if ($eAudio.Count -gt 1) {
             Add-Note "Note: $([System.IO.Path]::GetFileName($abs)) has $($eAudio.Count) audio streams; using the first."
@@ -231,16 +221,16 @@ try {
     }
 
     $extraSubInfos = @()
-    foreach ($p in @($ExtraSubtitles | Where-Object { $_ })) {
+    foreach ($p in $ExtraSubtitles) {
         $abs = Resolve-InputPath $p
         $ext = [System.IO.Path]::GetExtension($abs).ToLowerInvariant()
         if ($ext -in @('.sup', '.idx', '.sub')) {
-            throw (New-NightmixError "external subtitle '$([System.IO.Path]::GetFileName($abs))' is image-based ($ext); MP4/mov_text cannot carry it." 1)
+            throw "external subtitle '$([System.IO.Path]::GetFileName($abs))' is image-based ($ext); MP4/mov_text cannot carry it."
         }
         $eInfo = Get-MediaInfo -Path $abs
         $eSubs = @(Get-StreamsByType -MediaInfo $eInfo -Type 'subtitle')
         if ($eSubs.Count -eq 0) {
-            throw (New-NightmixError "external subtitle file has no subtitle stream: $abs" 1)
+            throw "external subtitle file has no subtitle stream: $abs"
         }
         $inputIndex = $inputPaths.Count
         $inputPaths.Add($abs)
@@ -265,7 +255,7 @@ try {
                 SrcIndex  = $idx
                 Lang      = (Get-StreamLanguage $s)
                 Title     = (Get-StreamTitle $s)
-                PlanLeft  = ('{0}  {1} {2} {3}' -f $idx, (Get-StreamLanguage $s), (Get-ChannelLayoutLabel $s), (Get-JsonProperty -Object $s -Name 'codec_name')).Trim()
+                PlanLeft  = ('{0}  {1} {2} {3}' -f $idx, (Get-StreamLanguage $s), (Get-ChannelLayoutLabel $s), $s.codec_name).Trim()
             }
         }
     }
@@ -291,8 +281,7 @@ try {
             # Every internal TEXT subtitle; image-based ones silently excluded.
             $subIdxList = @()
             for ($i = 0; $i -lt $srcSubs.Count; $i++) {
-                $c = "$(Get-JsonProperty -Object $srcSubs[$i] -Name 'codec_name')"
-                if ($TextSubtitleCodecs -contains $c) { $subIdxList += $i }
+                if ($TextSubtitleCodecs -contains $srcSubs[$i].codec_name) { $subIdxList += $i }
             }
         } else {
             $subIdxList = $subsSel.Indices
@@ -300,7 +289,7 @@ try {
 
         foreach ($idx in $subIdxList) {
             $s = $srcSubs[$idx]
-            $codec = "$(Get-JsonProperty -Object $s -Name 'codec_name')"
+            $codec = "$($s.codec_name)"
             $isImage = -not ($TextSubtitleCodecs -contains $codec)
             if ($isImage) {
                 Add-Note "Skipping subtitle $idx ($codec): image-based, not supported in MP4."
@@ -331,7 +320,7 @@ try {
     # --- ffmpeg command (string[] splatted: filter_complex and Cyrillic paths
     #     would break a single command string) ---
     $ff = New-Object System.Collections.Generic.List[string]
-    if ($targetExists -and $Force) { $ff.Add('-y') }
+    if ($Force) { $ff.Add('-y') }
 
     foreach ($ip in $inputPaths) { $ff.Add('-i'); $ff.Add($ip) }
 
@@ -368,7 +357,7 @@ try {
     $sizeParts = $prof.Size -split 'x'
     $boxW = [int]$sizeParts[0]; $boxH = [int]$sizeParts[1]
     $scaleFilter = "scale='min(iw,$boxW)':'min(ih,$boxH)':force_original_aspect_ratio=decrease:force_divisible_by=2"
-    $srcFps = Get-FrameRateValue (Get-JsonProperty -Object $video -Name 'r_frame_rate')
+    $srcFps = Get-FrameRateValue $video.r_frame_rate
     $capped = ($null -ne $srcFps -and $srcFps -gt $MaxFrameRate)
 
     $vfStages = @()
@@ -392,17 +381,9 @@ try {
         '-pix_fmt', $PixelFormat             # 8-bit: 10-bit is the usual outright-refusal cause
     ))
 
-    # audio / subtitle codecs (or disable)
-    if ($audioOutputs.Count -gt 0) {
-        $ff.AddRange([string[]]@('-c:a', $AudioCodec, '-b:a', $AudioBitrate))
-    } else {
-        $ff.Add('-an')
-    }
-    if ($subOutputs.Count -gt 0) {
-        $ff.AddRange([string[]]@('-c:s', $SubtitleCodec))
-    } elseif ($subsSel.None -and -not $hasExtraSubs) {
-        $ff.Add('-sn')
-    }
+    # Only mapped streams are written, so no audio/subs needs no -an/-sn.
+    if ($audioOutputs.Count -gt 0) { $ff.AddRange([string[]]@('-c:a', $AudioCodec, '-b:a', $AudioBitrate)) }
+    if ($subOutputs.Count -gt 0)   { $ff.AddRange([string[]]@('-c:s', $SubtitleCodec)) }
 
     # filter_complex drops source tags; copy them back. Absent tags emit no flag.
     for ($n = 0; $n -lt $audioOutputs.Count; $n++) {
@@ -428,11 +409,11 @@ try {
     $plan.Add("Target:  $targetAbs")
     $plan.Add('')
 
-    $srcW = Get-JsonProperty -Object $video -Name 'width'
-    $srcH = Get-JsonProperty -Object $video -Name 'height'
+    $srcW = $video.width
+    $srcH = $video.height
     $scaleNote = '(scaling unknown)'
     $outDims = "${srcW}x${srcH}"
-    if ($null -ne $srcW -and $null -ne $srcH -and $srcW -gt 0 -and $srcH -gt 0) {
+    if ($srcW -gt 0 -and $srcH -gt 0) {
         $factor = [Math]::Min([double]$boxW / $srcW, [double]$boxH / $srcH)
         if ($factor -ge 1) { $scaleNote = '(no scaling needed)'; $outDims = "${srcW}x${srcH}" }
         else {
@@ -442,9 +423,8 @@ try {
             $scaleNote = "(scaled to fit ${boxW}x${boxH})"
         }
     }
-    $srcCodec = Get-JsonProperty -Object $video -Name 'codec_name'
     $plan.Add("Video:   ${srcW}x${srcH} -> $outDims  $scaleNote")
-    $plan.Add("         $srcCodec -> $VideoCodec crf $($prof.Crf), profile $VideoProfile, cap $($prof.MaxRate)")
+    $plan.Add("         $($video.codec_name) -> $VideoCodec crf $($prof.Crf), profile $VideoProfile, cap $($prof.MaxRate)")
     $fpsNote = if ($capped) { "capped to $MaxFrameRate" } else { "under $MaxFrameRate cap, unchanged" }
     $deintNote = if ($Deinterlace) { 'deinterlace' } else { 'no deinterlace' }
     $plan.Add("         $(Format-Fps $srcFps) fps ($fpsNote), $deintNote")
@@ -456,9 +436,7 @@ try {
     } else {
         for ($n = 0; $n -lt $audioOutputs.Count; $n++) {
             $o = $audioOutputs[$n]
-            $left = $o.PlanLeft
-            if ($left.Length -lt 18) { $left = $left.PadRight(18) }
-            $line = "  $left -> stereo, dialogue-enhanced, $AudioCodec $AudioBitrate"
+            $line = "  $($o.PlanLeft.PadRight(18)) -> stereo, dialogue-enhanced, $AudioCodec $AudioBitrate"
             if ($n -eq 0) { $line += '  [default]' }
             $plan.Add($line)
         }
@@ -472,16 +450,15 @@ try {
         foreach ($row in $subPlan) { $plan.Add("  $row") }
     }
 
-    foreach ($note in $Notes) { Write-Output $note }
-    if ($Notes.Count -gt 0) { Write-Output '' }
-    Write-Plan -Lines $plan.ToArray()
-    Write-Output ''
+    if ($Notes.Count -gt 0) { $Notes; '' }
+    $plan
+    ''
 
     Invoke-FFmpeg -Arguments $ff.ToArray() -TotalSeconds $durationSeconds -DryRun:$DryRun
 
-    if (-not $DryRun) { Write-Output "Done. -> $targetAbs" }
+    if (-not $DryRun) { "Done. -> $targetAbs" }
     exit 0
 } catch {
     [Console]::Error.WriteLine("Error: $($_.Exception.Message)")
-    exit (Get-NightmixExitCode $_)
+    exit 1
 }

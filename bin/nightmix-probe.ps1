@@ -44,18 +44,16 @@ function Format-FrameRate {
 }
 
 function Format-Duration {
-    param([string]$Seconds)
-    if (-not $Seconds) { return $null }
-    try { $value = ConvertTo-InvariantDouble $Seconds } catch { return $null }
+    param($Seconds)
+    $value = [double]$Seconds
     if ($value -le 0) { return $null }
     $ts = [System.TimeSpan]::FromSeconds([math]::Floor($value))
     return ('{0}:{1:00}:{2:00}' -f [int][math]::Floor($ts.TotalHours), $ts.Minutes, $ts.Seconds)
 }
 
 function Format-Size {
-    param([string]$Bytes)
-    if (-not $Bytes) { return $null }
-    try { $value = ConvertTo-InvariantDouble $Bytes } catch { return $null }
+    param($Bytes)
+    $value = [double]$Bytes
     if ($value -le 0) { return $null }
     $units = @('B', 'KB', 'MB', 'GB', 'TB')
     $i = 0
@@ -67,35 +65,22 @@ function Format-Size {
 
 function Format-Bitrate {
     param([Parameter(Mandatory)]$Stream)
-    $raw = Get-JsonProperty -Object $Stream -Name 'bit_rate'
-    if ($null -eq $raw) { return $null }
-    $text = "$raw".Trim()
-    if (-not $text -or $text -eq '0') { return $null }
-    try { $bps = ConvertTo-InvariantDouble $text } catch { return $null }
-    if ($bps -le 0) { return $null }
+    $bps = [double]$Stream.bit_rate
+    if ($bps -le 0) { return $null }   # absent in most MKVs
     return ('{0}k' -f [int][math]::Round($bps / 1000))
 }
 
+# Pad to $Width, but always leave at least two spaces before the next column.
 function Format-Column {
     param([string]$Value, [int]$Width)
-    if ($null -eq $Value) { $Value = '' }
-    if ($Value.Length -ge $Width) { return $Value }
-    return $Value.PadRight($Width)
-}
-
-function Test-ImageSubtitle {
-    param([Parameter(Mandatory)][string]$Codec)
-    # Text codecs are the only ones that convert cleanly to mov_text; anything
-    # else (known image codec or unrecognised) is flagged as image-based.
-    return (-not ($TextSubtitleCodecs -contains $Codec))
+    return ($Value.PadRight($Width - 2) + '  ')
 }
 
 function Test-DecodeUnfriendly {
     param([Parameter(Mandatory)]$VideoStream)
-    $codec = "$(Get-JsonProperty -Object $VideoStream -Name 'codec_name')".ToLowerInvariant()
-    $pixfmt = "$(Get-JsonProperty -Object $VideoStream -Name 'pix_fmt')".ToLowerInvariant()
+    $codec = "$($VideoStream.codec_name)".ToLowerInvariant()
 
-    $isTenBit = ($pixfmt -match '10(le|be)')
+    $isTenBit = ($VideoStream.pix_fmt -match '10(le|be)')
     $isHardCodec = ($codec -in @('hevc', 'vp9', 'av1'))
 
     if (-not ($isTenBit -or $isHardCodec)) { return $null }
@@ -111,113 +96,80 @@ function Test-DecodeUnfriendly {
 # ---------------------------------------------------------------------------
 
 try {
-    Assert-Tool $FFprobePath
     $path = Resolve-InputPath $File
     $info = Get-MediaInfo -Path $path
 
-    $out = New-Object System.Collections.Generic.List[string]
-
     # --- Header + video line ---
-    $out.Add([System.IO.Path]::GetFileName($path))
+    [System.IO.Path]::GetFileName($path)
 
     $videoStreams = @(Get-StreamsByType -MediaInfo $info -Type 'video')
     if ($videoStreams.Count -eq 0) {
-        $out.Add('  no video')
+        '  no video'
     } else {
         $video = $videoStreams[0]
         $tokens = @()
 
-        $width = Get-JsonProperty -Object $video -Name 'width'
-        $height = Get-JsonProperty -Object $video -Name 'height'
-        if ($null -ne $width -and $null -ne $height) { $tokens += "${width}x${height}" }
+        if ($video.width -and $video.height) { $tokens += "$($video.width)x$($video.height)" }
+        if ($video.codec_name) { $tokens += "$($video.codec_name)" }
 
-        $codec = Get-JsonProperty -Object $video -Name 'codec_name'
-        if ($codec) { $tokens += "$codec" }
-
-        $fps = Format-FrameRate (Get-JsonProperty -Object $video -Name 'r_frame_rate')
+        $fps = Format-FrameRate $video.r_frame_rate
         if ($fps) { $tokens += "$fps fps" }
 
-        $durationRaw = Get-JsonProperty -Object $info.format -Name 'duration'
-        if (-not $durationRaw) { $durationRaw = Get-JsonProperty -Object $video -Name 'duration' }
+        $durationRaw = $info.format.duration
+        if (-not $durationRaw) { $durationRaw = $video.duration }
         $duration = Format-Duration $durationRaw
         if ($duration) { $tokens += $duration }
 
-        $size = Format-Size (Get-JsonProperty -Object $info.format -Name 'size')
+        $size = Format-Size $info.format.size
         if ($size) { $tokens += $size }
 
-        $out.Add('  ' + ($tokens -join ', '))
+        '  ' + ($tokens -join ', ')
 
-        # Interlacing note.
-        $fieldOrder = "$(Get-JsonProperty -Object $video -Name 'field_order')".Trim()
+        $fieldOrder = "$($video.field_order)".Trim()
         if ($fieldOrder -and $fieldOrder -ne 'progressive') {
-            $out.Add("  interlaced (field_order: $fieldOrder) - consider -Deinterlace")
+            "  interlaced (field_order: $fieldOrder) - consider -Deinterlace"
         }
 
-        # Decode-cost note (10-bit / HEVC / VP9 / AV1).
         $decodeNote = Test-DecodeUnfriendly -VideoStream $video
-        if ($decodeNote) { $out.Add("  $decodeNote") }
+        if ($decodeNote) { "  $decodeNote" }
     }
 
     # --- Audio section ---
-    $out.Add('')
-    $out.Add('Audio')
+    ''
+    'Audio'
     $audioStreams = @(Get-StreamsByType -MediaInfo $info -Type 'audio')
-    if ($audioStreams.Count -eq 0) {
-        $out.Add('  (none)')
-    } else {
-        for ($i = 0; $i -lt $audioStreams.Count; $i++) {
-            $s = $audioStreams[$i]
-            $lang = Get-StreamLanguage $s
-            $layout = Get-ChannelLayoutLabel $s
-            $codec = "$(Get-JsonProperty -Object $s -Name 'codec_name')"
-            $bitrate = Format-Bitrate $s
-            $title = Get-StreamTitle $s
-
-            $row = '  ' +
-                   (Format-Column "$i" 3) +
-                   (Format-Column $lang 5) +
-                   (Format-Column $layout 5) +
-                   (Format-Column $codec 6) +
-                   (Format-Column $bitrate 7) +
-                   "$title"
-            $out.Add($row.TrimEnd())
-        }
+    if ($audioStreams.Count -eq 0) { '  (none)' }
+    for ($i = 0; $i -lt $audioStreams.Count; $i++) {
+        $s = $audioStreams[$i]
+        $row = '  ' +
+               (Format-Column "$i" 3) +
+               (Format-Column (Get-StreamLanguage $s) 5) +
+               (Format-Column (Get-ChannelLayoutLabel $s) 5) +
+               (Format-Column $s.codec_name 6) +
+               (Format-Column (Format-Bitrate $s) 7) +
+               (Get-StreamTitle $s)
+        $row.TrimEnd()
     }
 
     # --- Subtitles section ---
-    $out.Add('')
-    $out.Add('Subtitles')
+    ''
+    'Subtitles'
     $subStreams = @(Get-StreamsByType -MediaInfo $info -Type 'subtitle')
-    if ($subStreams.Count -eq 0) {
-        $out.Add('  (none)')
-    } else {
-        for ($i = 0; $i -lt $subStreams.Count; $i++) {
-            $s = $subStreams[$i]
-            $lang = Get-StreamLanguage $s
-            $codec = "$(Get-JsonProperty -Object $s -Name 'codec_name')"
-            $title = Get-StreamTitle $s
+    if ($subStreams.Count -eq 0) { '  (none)' }
+    for ($i = 0; $i -lt $subStreams.Count; $i++) {
+        $s = $subStreams[$i]
+        $rest = @(Get-StreamTitle $s)
+        if ($TextSubtitleCodecs -notcontains $s.codec_name) { $rest += '[image-based, will be skipped]' }
 
-            $rest = @()
-            if ($title) { $rest += $title }
-            if (Test-ImageSubtitle $codec) { $rest += '[image-based, will be skipped]' }
-            $restText = ($rest -join '   ')
-
-            $prefix = '  ' + (Format-Column "$i" 3) + (Format-Column $lang 5)
-            if ($codec.Length -ge 8) {
-                # Long codec (e.g. hdmv_pgs_subtitle) overflows the column; add a
-                # fixed gap before the trailing text instead of padding.
-                $row = $prefix + $codec
-                if ($restText) { $row += '   ' + $restText }
-            } else {
-                $row = $prefix + (Format-Column $codec 8) + $restText
-            }
-            $out.Add($row.TrimEnd())
-        }
+        $row = '  ' +
+               (Format-Column "$i" 3) +
+               (Format-Column (Get-StreamLanguage $s) 5) +
+               (Format-Column $s.codec_name 8) +
+               (($rest | Where-Object { $_ }) -join '   ')
+        $row.TrimEnd()
     }
-
-    $out | ForEach-Object { Write-Output $_ }
     exit 0
 } catch {
     [Console]::Error.WriteLine($_.Exception.Message)
-    exit (Get-NightmixExitCode $_)
+    exit 1
 }

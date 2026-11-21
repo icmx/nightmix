@@ -1,5 +1,8 @@
 # Shared constants and helpers. Dot-sourced by the bin/ scripts; never run directly.
 # Don't tune values here - override them in config.ps1 (loaded at the end).
+#
+# Note: [double]"1.5" and "$x" are culture-invariant in PowerShell; only -f and
+# .ToString() follow the current (possibly ru-RU, comma-decimal) culture.
 
 # Cyrillic track titles from ffprobe and Cyrillic paths need UTF-8.
 try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
@@ -61,171 +64,81 @@ $TextSubtitleCodecs  = @('subrip','srt','ass','ssa','mov_text','webvtt','text')
 $ImageSubtitleCodecs = @('hdmv_pgs_subtitle','dvd_subtitle','dvb_subtitle','xsub')
 
 # ---------------------------------------------------------------------------
-# Errors
+# Probing
 # ---------------------------------------------------------------------------
 
-# Exit code rides in the exception's Data (1 = usage/validation, 2 = ffmpeg/ffprobe).
-function New-NightmixError {
-    param(
-        [Parameter(Mandatory)][string]$Message,
-        [int]$ExitCode = 1
-    )
-    $ex = New-Object System.Exception($Message)
-    $ex.Data['ExitCode'] = $ExitCode
-    return $ex
-}
-
-function Get-NightmixExitCode {
-    param([Parameter(Mandatory)]$ErrorRecord)
-    $code = 1
-    if ($ErrorRecord.Exception -and $ErrorRecord.Exception.Data -and
-        $ErrorRecord.Exception.Data.Contains('ExitCode')) {
-        $code = [int]$ErrorRecord.Exception.Data['ExitCode']
-    }
-    return $code
-}
-
-# ---------------------------------------------------------------------------
-# Small parsing/formatting helpers (shared by probe and convert)
-# ---------------------------------------------------------------------------
-
-# ffprobe emits dot-decimal numbers regardless of locale; parse invariantly so
-# a Russian-locale Windows does not misread "10140.000000".
-function ConvertTo-InvariantDouble {
-    param([Parameter(Mandatory)][string]$Value)
-    return [double]::Parse(
-        $Value,
-        [System.Globalization.NumberStyles]::Float,
-        [System.Globalization.CultureInfo]::InvariantCulture)
-}
-
-# True when $Object (a PSCustomObject from ConvertFrom-Json) has a non-empty
-# property $Name. PS 5.1 ConvertFrom-Json returns PSCustomObject, so we test
-# the property set rather than $null on a maybe-absent member.
-function Test-JsonProperty {
-    param([Parameter(Mandatory)]$Object, [Parameter(Mandatory)][string]$Name)
-    if ($null -eq $Object) { return $false }
-    return ($Object.PSObject.Properties.Name -contains $Name)
-}
-
-function Get-JsonProperty {
-    param([Parameter(Mandatory)]$Object, [Parameter(Mandatory)][string]$Name)
-    if (Test-JsonProperty -Object $Object -Name $Name) { return $Object.$Name }
-    return $null
-}
-
-# ---------------------------------------------------------------------------
-# Probing, paths, ffmpeg
-# ---------------------------------------------------------------------------
-
-function Assert-Tool {
-    param([Parameter(Mandatory)][string]$Name)
-    if (-not (Get-Command $Name -ErrorAction SilentlyContinue)) {
-        throw (New-NightmixError "Required tool not found on PATH: $Name" 1)
-    }
-}
-
+# ffprobe's own error (if any) goes straight to the console via stderr.
 function Get-MediaInfo {
     param([Parameter(Mandatory)][string]$Path)
-
-    $probeArgs = @(
-        '-v', 'quiet',
-        '-print_format', 'json',
-        '-show_format',
-        '-show_streams',
-        $Path
-    )
-
-    $output = & $FFprobePath @probeArgs
-    if ($LASTEXITCODE -ne 0) {
-        throw (New-NightmixError "ffprobe failed (exit $LASTEXITCODE) for: $Path" 2)
-    }
-    if (-not $output) {
-        throw (New-NightmixError "ffprobe returned no output for: $Path" 2)
-    }
-
-    $json = ($output -join "`n")
-    try {
-        return ($json | ConvertFrom-Json)
-    } catch {
-        throw (New-NightmixError "ffprobe output could not be parsed as JSON for: $Path" 2)
-    }
+    $json = & $FFprobePath -v error -print_format json -show_format -show_streams $Path
+    if ($LASTEXITCODE -ne 0) { throw "ffprobe failed for: $Path" }
+    return (($json -join "`n") | ConvertFrom-Json)
 }
 
+# Array position is the per-type index. Callers wrap the result in @().
 function Get-StreamsByType {
     param(
         [Parameter(Mandatory)]$MediaInfo,
         [Parameter(Mandatory)][ValidateSet('video','audio','subtitle')][string]$Type
     )
-    $streams = @()
-    if (Test-JsonProperty -Object $MediaInfo -Name 'streams') {
-        $streams = @($MediaInfo.streams | Where-Object { $_.codec_type -eq $Type })
-    }
-    # Array position is the per-type index. Callers wrap in @(); no unary comma
-    # here, or that @() would nest an array inside an array.
-    return $streams
+    return ($MediaInfo.streams | Where-Object { $_.codec_type -eq $Type })
 }
 
-# Returns the tag value as a trimmed string, or $null when absent/blank.
+# Trimmed tag value, or $null when absent/blank. Tag names are case-insensitive.
 function Get-StreamTag {
     param([Parameter(Mandatory)]$Stream, [Parameter(Mandatory)][string]$Name)
-    if (Test-JsonProperty -Object $Stream -Name 'tags') {
-        $tags = $Stream.tags
-        if (Test-JsonProperty -Object $tags -Name $Name) {
-            $value = "$($tags.$Name)".Trim()
-            if ($value) { return $value }
-        }
-    }
+    $value = "$($Stream.tags.$Name)".Trim()
+    if ($value) { return $value }
     return $null
 }
 
 function Get-StreamLanguage {
     param([Parameter(Mandatory)]$Stream)
-    $lang = Get-StreamTag -Stream $Stream -Name 'language'
-    # MP4 defaults to 'und'; MKV leaves it absent. Treat both as absent.
-    if ($lang -and $lang.ToLowerInvariant() -eq 'und') { return $null }
+    $lang = Get-StreamTag $Stream 'language'
+    if ($lang -eq 'und') { return $null }   # MP4's default; MKV leaves it absent
     return $lang
 }
 
+# MKV stores a track title as 'title'; MP4 stores it as 'name'.
 function Get-StreamTitle {
     param([Parameter(Mandatory)]$Stream)
-    return (Get-StreamTag -Stream $Stream -Name 'title')
+    $title = Get-StreamTag $Stream 'title'
+    if (-not $title) { $title = Get-StreamTag $Stream 'name' }
+    return $title
 }
 
 function Get-ChannelLayoutLabel {
     param([Parameter(Mandatory)]$Stream)
 
     # Prefer ffprobe's channel_layout: "5.1(side)" -> "5.1", stereo -> 2.0.
-    $layout = "$(Get-JsonProperty -Object $Stream -Name 'channel_layout')".Trim()
-    if ($layout) {
-        $layout = ($layout -replace '\(.*?\)\s*$', '')
-        switch ($layout) {
-            'mono'   { return '1.0' }
-            'stereo' { return '2.0' }
-            default  { return $layout }
-        }
+    $layout = "$($Stream.channel_layout)" -replace '\(.*?\)\s*$', ''
+    switch ($layout) {
+        ''       { break }
+        'mono'   { return '1.0' }
+        'stereo' { return '2.0' }
+        default  { return $layout }
     }
 
-    $channels = 0
-    $raw = Get-JsonProperty -Object $Stream -Name 'channels'
-    if ($null -ne $raw) { $channels = [int]$raw }
-    switch ($channels) {
+    switch ([int]$Stream.channels) {
+        0       { return '' }
         1       { return '1.0' }
         2       { return '2.0' }
         6       { return '5.1' }
         8       { return '7.1' }
-        default { if ($channels -gt 0) { return "$channels ch" } else { return '' } }
+        default { return "$($Stream.channels) ch" }
     }
 }
+
+# ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
 
 # Every path handed to ffmpeg is made absolute first: $PWD and the process cwd
 # can diverge, so a relative path may resolve elsewhere in the child process.
 function Resolve-InputPath {
     param([Parameter(Mandatory)][string]$Path)
     $resolved = Resolve-Path -LiteralPath $Path -ErrorAction SilentlyContinue
-    if (-not $resolved) {
-        throw (New-NightmixError "File not found: $Path" 1)
-    }
+    if (-not $resolved) { throw "File not found: $Path" }
     return $resolved.ProviderPath
 }
 
@@ -253,15 +166,18 @@ function Resolve-OutputPath {
 
     if ($Directory -and -not (Test-PathHasDirectory $Path)) {
         if (-not (Test-Path -LiteralPath $Directory -PathType Container)) {
-            throw (New-NightmixError ("output directory does not exist: $Directory`n" +
-                "Create it, or give the target a path of its own (.\$Path writes to the current directory).") 1)
+            throw ("output directory does not exist: $Directory`n" +
+                "Create it, or give the target a path of its own (.\$Path writes to the current directory).")
         }
         $base = (Resolve-Path -LiteralPath $Directory).ProviderPath
     }
 
-    $combined = [System.IO.Path]::Combine($base, $Path)
-    return [System.IO.Path]::GetFullPath($combined)
+    return [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($base, $Path))
 }
+
+# ---------------------------------------------------------------------------
+# ffmpeg
+# ---------------------------------------------------------------------------
 
 # Pretty-print an ffmpeg command for -DryRun: copy-pasteable, one flag plus its
 # operands per line.
@@ -288,32 +204,19 @@ function Format-FFmpegCommand {
     return $lines.ToArray()
 }
 
-# Seconds from an ffmpeg "HH:MM:SS.micro" timestamp; $null if unparseable.
-function ConvertTo-SecondsFromHms {
-    param([string]$Value)
-    if ($Value -notmatch '^(\d+):([0-5]\d):([0-5]\d(?:\.\d+)?)$') { return $null }
-    return ([double]$Matches[1] * 3600 + [double]$Matches[2] * 60 + (ConvertTo-InvariantDouble $Matches[3]))
-}
-
 function Format-Hms {
     param([double]$Seconds)
-    if ($Seconds -lt 0 -or [double]::IsNaN($Seconds) -or [double]::IsInfinity($Seconds)) { $Seconds = 0 }
-    $ts = [System.TimeSpan]::FromSeconds([math]::Floor($Seconds))
+    $ts = [System.TimeSpan]::FromSeconds([math]::Floor([math]::Max(0, $Seconds)))
     return ('{0:00}:{1:00}:{2:00}' -f [int][math]::Floor($ts.TotalHours), $ts.Minutes, $ts.Seconds)
 }
 
-# Progress flags injected by Invoke-FFmpeg. -nostats/-loglevel silence the
-# stream dumps, the x264 options wall and the closing statistics; -progress
-# emits a machine-readable key=value stream we render ourselves.
+# -nostats/-loglevel silence ffmpeg's banner, stream dumps and statistics;
+# -progress writes key=value blocks to stdout, which we render ourselves.
 $ProgressFlags = @('-nostats', '-loglevel', 'error', '-progress', 'pipe:1')
 
-# Progress keys we consume silently; anything else on the stream is real log
-# output. Listed explicitly so a genuine error line is never swallowed.
-$ProgressKeyPattern = '^(frame|fps|bitrate|total_size|out_time_us|out_time_ms|dup_frames|drop_frames|stream_[0-9_]+q)='
-
-# The single execution point for ffmpeg. Silences ffmpeg and renders one
-# progress line from its -progress stream; $TotalSeconds (source duration)
-# adds percentage and ETA. -DryRun prints the command, progress flags included.
+# The single execution point for ffmpeg. Renders one progress line from the
+# -progress stream; $TotalSeconds (source duration) adds percentage and ETA.
+# -DryRun prints the command, progress flags included.
 function Invoke-FFmpeg {
     param(
         [Parameter(Mandatory)][string[]]$Arguments,
@@ -323,46 +226,54 @@ function Invoke-FFmpeg {
 
     $full = @($ProgressFlags + $Arguments)
 
-    if ($DryRun) {
-        Write-Plan -Lines (Format-FFmpegCommand -Arguments $full)
-        return
-    }
+    if ($DryRun) { return (Format-FFmpegCommand -Arguments $full) }
 
     # Under 'Stop', 2>&1 turns ffmpeg's first stderr line into a terminating
     # error. Failure is detected via $LASTEXITCODE instead.
     $ErrorActionPreference = 'Continue'
 
     $tail      = New-Object System.Collections.Generic.Queue[string]
+    $secs      = 0.0
     $speed     = ''
     $lastShown = -1.0
     $painted   = $false
     $live      = -not [Console]::IsErrorRedirected   # repaint in place vs plain lines
 
     & $FFmpegPath @full 2>&1 | ForEach-Object {
-        $line = if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.ToString() } else { "$_" }
-
-        if ($line -match '^speed=\s*(.+?)\s*$') {
-            $v = $Matches[1]   # N/A until ffmpeg has a measurement
-            $speed = if ($v -match '^[0-9.]+x$') { $v } else { '' }
+        # stderr = genuine log/error output; stdout = progress key=value lines.
+        if ($_ -is [System.Management.Automation.ErrorRecord]) {
+            $line = $_.ToString()
+            if ($painted) { [Console]::Error.WriteLine(''); $painted = $false }
+            [Console]::Error.WriteLine($line)
+            $tail.Enqueue($line)
+            while ($tail.Count -gt 20) { [void]$tail.Dequeue() }
             return
         }
-        if ($line -match '^out_time=(.+?)\s*$') {
-            $secs = ConvertTo-SecondsFromHms $Matches[1]
-            if ($null -eq $secs) { return }
 
-            $text = ''
+        $key, $value = "$_" -split '=', 2
+        $value = "$value".Trim()
+
+        if ($key -eq 'out_time_us') {
+            if ($value -match '^\d+$') { $secs = [double]$value / 1e6 }   # N/A at the start
+        } elseif ($key -eq 'speed') {
+            $speed = if ($value -match '^[0-9.]+x$') { $value } else { '' }   # N/A until measured
+        } elseif ($key -eq 'progress') {
+            # Each block ends with progress=continue|end. The last block lands a
+            # hair under the full duration, so 'end' is reported as 100%.
+            if ($value -eq 'end' -and $TotalSeconds -gt 0) { $secs = $TotalSeconds }
+
             if ($TotalSeconds -gt 0) {
                 $pct = [math]::Min(100, [int][math]::Floor($secs * 100 / $TotalSeconds))
                 $text = ('[{0,3}%]  {1} / {2}' -f $pct, (Format-Hms $secs), (Format-Hms $TotalSeconds))
             } else {
                 $text = ('         {0}' -f (Format-Hms $secs))
             }
-            if ($speed) { $text += "   speed $speed" }
-
-            $rate = 0.0
-            if ($speed -match '^([0-9.]+)x$') { $rate = [double]::Parse($Matches[1], [System.Globalization.CultureInfo]::InvariantCulture) }
-            if ($TotalSeconds -gt 0 -and $rate -gt 0) {
-                $text += ('   eta {0}' -f (Format-Hms (($TotalSeconds - $secs) / $rate)))
+            if ($speed) {
+                $text += "   speed $speed"
+                $rate = [double]$speed.TrimEnd('x')
+                if ($rate -gt 0 -and $TotalSeconds -gt $secs) {
+                    $text += ('   eta {0}' -f (Format-Hms (($TotalSeconds - $secs) / $rate)))
+                }
             }
 
             if ($live) {
@@ -376,39 +287,15 @@ function Invoke-FFmpeg {
                     $lastShown = $mark
                 }
             }
-            return
         }
-        if ($line -match '^progress=\s*(.+?)\s*$') {
-            # ffmpeg's last block lands a hair under the full duration, so the
-            # 100% step never fires on its own — close it out explicitly.
-            if ($Matches[1] -eq 'end' -and $TotalSeconds -gt 0) {
-                $final = ('[{0,3}%]  {1} / {2}' -f 100, (Format-Hms $TotalSeconds), (Format-Hms $TotalSeconds))
-                if ($live) { [Console]::Error.Write("`r" + $final.PadRight(76)); $painted = $true }
-                else { [Console]::Error.WriteLine($final) }
-            }
-            return
-        }
-        if ($line -match $ProgressKeyPattern) { return }
-
-        # Anything else is genuine log/error output.
-        if ($painted) { [Console]::Error.WriteLine(''); $painted = $false }
-        [Console]::Error.WriteLine($line)
-        $tail.Enqueue($line)
-        while ($tail.Count -gt 20) { [void]$tail.Dequeue() }
     }
     $code = $LASTEXITCODE
 
     if ($painted) { [Console]::Error.WriteLine('') }
 
     if ($code -ne 0) {
-        $detail = ($tail.ToArray() -join "`n")
-        throw (New-NightmixError "ffmpeg failed (exit $code):`n$detail" 2)
+        throw "ffmpeg failed (exit $code):`n$($tail.ToArray() -join "`n")"
     }
-}
-
-function Write-Plan {
-    param([Parameter(Mandatory)][AllowEmptyString()][string[]]$Lines)
-    foreach ($line in $Lines) { Write-Output $line }
 }
 
 # Local overrides: dot-sourced last so they win; absent is fine.
@@ -418,4 +305,3 @@ $NightmixConfigPath = [System.IO.Path]::GetFullPath(
 if (Test-Path -LiteralPath $NightmixConfigPath) {
     . $NightmixConfigPath
 }
-
