@@ -18,7 +18,7 @@ Clone the repo anywhere, then run once:
 .\install.ps1
 ```
 
-This adds `bin\` to your user `PATH` (no admin needed), checks your execution policy, verifies ffmpeg, and creates `config.ps1` from `config.example.ps1` if you don't have one yet. Open a **new** PowerShell window afterwards so it picks up the new `PATH`. Re-run `install.ps1` after moving the repo; `.\install.ps1 -Uninstall` removes it (and leaves `config.ps1` alone).
+This adds `bin\` to your user `PATH` (no admin needed), checks that your ffmpeg has the `dialoguenhance` filter, and creates `config.ps1` from `config.example.ps1` if you don't have one yet. Open a **new** PowerShell window afterwards so it picks up the new `PATH`. Re-run `install.ps1` after moving the repo; `.\install.ps1 -Uninstall` removes the entry (and leaves `config.ps1` alone).
 
 ## Usage
 
