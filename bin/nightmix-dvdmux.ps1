@@ -63,17 +63,8 @@ try {
         $vtsDir = $dirAbs   # a folder holding the VOBs directly
     }
 
-    $outDir = if ($OutputDirectory) { $OutputDirectory } else { $DefaultOutputDirectory }
-    $targetAbs = Resolve-OutputPath -Path $Result -Directory $outDir
-
-    $targetExists = Test-Path -LiteralPath $targetAbs
-    $existsNeedsForce = $false
-    if ($targetExists -and -not $Force) {
-        if (-not $DryRun) {
-            throw "result already exists: $targetAbs (use -Force to overwrite)."
-        }
-        $existsNeedsForce = $true
-    }
+    $targetAbs = Resolve-OutputPath -Path $Result -Directory $OutputDirectory
+    $overwriteNote = Assert-CanOverwrite -Path $targetAbs -Force:$Force -DryRun:$DryRun
 
     # --- Group VTS_<NN>_<M>.VOB by title NN; the largest group is the main title ---
     $vobs = @(Get-ChildItem -LiteralPath $vtsDir -File -Filter 'VTS_*.VOB' -ErrorAction SilentlyContinue)
@@ -121,9 +112,9 @@ try {
         Write-Output ''
         Write-Output "Warning: the selected title is only $(Format-GiB $selected.Total) - this looks too small to be a main title, but proceeding."
     }
-    if ($existsNeedsForce) {
+    if ($overwriteNote) {
         Write-Output ''
-        Write-Output "Note: result exists; a real run would need -Force to overwrite it."
+        Write-Output $overwriteNote
     }
     Write-Output ''
 

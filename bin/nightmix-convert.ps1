@@ -92,25 +92,26 @@ function ConvertFrom-IndexSelector {
     return @{ None = $false; All = $false; Indices = @($indices | Sort-Object -Unique) }
 }
 
-# Numeric frame rate from an "num/den" fraction; $null if unparseable.
-function Get-FrameRateValue {
-    param([string]$RFrameRate)
-    if (-not $RFrameRate) { return $null }
-    $p = $RFrameRate -split '/'
-    if ($p.Count -ne 2) { return $null }
-    $den = [double]$p[1]
-    if ($den -eq 0) { return $null }
-    return ([double]$p[0] / $den)
-}
-
-function Format-Fps {
-    param($Value)
-    if ($null -eq $Value) { return '?' }
-    return ([math]::Round($Value, 3)).ToString('0.###', [System.Globalization.CultureInfo]::InvariantCulture)
-}
-
 $Notes = New-Object System.Collections.Generic.List[string]
 function Add-Note { param([string]$Text) $Notes.Add($Text) }
+
+# ffmpeg inputs, in order: source (0), then -ExtraAudio, then -ExtraSubtitles.
+$InputPaths = New-Object System.Collections.Generic.List[string]
+
+# One external file = one extra input; its first $Type stream becomes a track.
+function Add-ExternalTrack {
+    param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$Type)
+    $abs = Resolve-InputPath $Path
+    $name = [System.IO.Path]::GetFileName($abs)
+    $streams = @(Get-StreamsByType -MediaInfo (Get-MediaInfo -Path $abs) -Type $Type)
+    if ($streams.Count -eq 0) { throw "external $Type file has no $Type stream: $abs" }
+    if ($streams.Count -gt 1) { Add-Note "Note: $name has $($streams.Count) $Type streams; using the first." }
+
+    $title = Get-StreamTitle $streams[0]
+    if (-not $title) { $title = [System.IO.Path]::GetFileNameWithoutExtension($abs) }
+    $InputPaths.Add($abs)
+    return @{ Input = $InputPaths.Count - 1; Stream = 0; Lang = (Get-StreamLanguage $streams[0]); Title = $title; Plan = "+ $name" }
+}
 
 # ---------------------------------------------------------------------------
 # Main
@@ -148,16 +149,9 @@ try {
     $sourceAbs = Resolve-InputPath $Source
 
     # Resolved before the overwrite check, so -Force guards the file actually written.
-    $outDir = if ($OutputDirectory) { $OutputDirectory } else { $DefaultOutputDirectory }
-    $targetAbs = Resolve-OutputPath -Path $Target -Directory $outDir
-
-    $targetExists = Test-Path -LiteralPath $targetAbs
-    if ($targetExists -and -not $Force) {
-        if (-not $DryRun) {
-            throw "target already exists: $targetAbs (use -Force to overwrite)."
-        }
-        Add-Note "Note: target exists; a real run would need -Force to overwrite it."
-    }
+    $targetAbs = Resolve-OutputPath -Path $Target -Directory $OutputDirectory
+    $note = Assert-CanOverwrite -Path $targetAbs -Force:$Force -DryRun:$DryRun
+    if ($note) { Add-Note $note }
 
     # --- Probe ---
     $info = Get-MediaInfo -Path $sourceAbs
@@ -170,151 +164,63 @@ try {
     }
     $video = $srcVideo[0]
 
-    # Source duration drives the progress percentage/ETA.
-    $durRaw = $info.format.duration
-    if (-not $durRaw) { $durRaw = $video.duration }
-    $durationSeconds = [double]$durRaw
+    $durationSeconds = Get-MediaDuration $info $video   # drives progress % and ETA
+    $InputPaths.Add($sourceAbs)
 
-    # --- Validate indices ---
-    if (-not $audioSel.None) {
-        foreach ($idx in $audioSel.Indices) {
-            if ($idx -ge $srcAudio.Count) {
-                $hi = [math]::Max($srcAudio.Count - 1, 0)
-                throw "-Audio requested index $idx, but the source has $($srcAudio.Count) audio track(s) (0..$hi)."
-            }
-        }
-    }
-
-    if (-not $subsSel.None -and -not $subsSel.All) {
-        foreach ($idx in $subsSel.Indices) {
-            if ($idx -ge $srcSubs.Count) {
-                $hi = [math]::Max($srcSubs.Count - 1, 0)
-                throw "-Subtitles requested index $idx, but the source has $($srcSubs.Count) subtitle track(s) (0..$hi)."
-            }
-        }
-    }
-
-    # --- Inputs, in order: source (0), extra audio, extra subs ---
-    $inputPaths = New-Object System.Collections.Generic.List[string]
-    $inputPaths.Add($sourceAbs)
-
-    $extraAudioInfos = @()
-    foreach ($p in $ExtraAudio) {
-        $abs = Resolve-InputPath $p
-        $eInfo = Get-MediaInfo -Path $abs
-        $eAudio = @(Get-StreamsByType -MediaInfo $eInfo -Type 'audio')
-        if ($eAudio.Count -eq 0) {
-            throw "external audio file has no audio stream: $abs"
-        }
-        if ($eAudio.Count -gt 1) {
-            Add-Note "Note: $([System.IO.Path]::GetFileName($abs)) has $($eAudio.Count) audio streams; using the first."
-        }
-        $inputIndex = $inputPaths.Count
-        $inputPaths.Add($abs)
-        $extraAudioInfos += @{
-            InputIndex = $inputIndex
-            Abs        = $abs
-            FileName   = [System.IO.Path]::GetFileName($abs)
-            Stem       = [System.IO.Path]::GetFileNameWithoutExtension($abs)
-            First      = $eAudio[0]
-        }
-    }
-
-    $extraSubInfos = @()
-    foreach ($p in $ExtraSubtitles) {
-        $abs = Resolve-InputPath $p
-        $ext = [System.IO.Path]::GetExtension($abs).ToLowerInvariant()
-        if ($ext -in @('.sup', '.idx', '.sub')) {
-            throw "external subtitle '$([System.IO.Path]::GetFileName($abs))' is image-based ($ext); MP4/mov_text cannot carry it."
-        }
-        $eInfo = Get-MediaInfo -Path $abs
-        $eSubs = @(Get-StreamsByType -MediaInfo $eInfo -Type 'subtitle')
-        if ($eSubs.Count -eq 0) {
-            throw "external subtitle file has no subtitle stream: $abs"
-        }
-        $inputIndex = $inputPaths.Count
-        $inputPaths.Add($abs)
-        $extraSubInfos += @{
-            InputIndex = $inputIndex
-            Abs        = $abs
-            FileName   = [System.IO.Path]::GetFileName($abs)
-            Stem       = [System.IO.Path]::GetFileNameWithoutExtension($abs)
-            First      = $eSubs[0]
-        }
-    }
-
-    # --- Output tracks: internal (index order), then external (command-line order) ---
+    # --- Output tracks: internal (index order), then external (command-line order).
+    #     Each is @{ Input; Stream; Lang; Title; Plan } ---
 
     $audioOutputs = @()
-    if (-not $audioSel.None) {
-        foreach ($idx in $audioSel.Indices) {
-            $s = $srcAudio[$idx]
-            $audioOutputs += @{
-                Kind      = 'internal'
-                InputIndex = 0
-                SrcIndex  = $idx
-                Lang      = (Get-StreamLanguage $s)
-                Title     = (Get-StreamTitle $s)
-                PlanLeft  = ('{0}  {1} {2} {3}' -f $idx, (Get-StreamLanguage $s), (Get-ChannelLayoutLabel $s), $s.codec_name).Trim()
-            }
+    foreach ($idx in $audioSel.Indices) {
+        if ($idx -ge $srcAudio.Count) {
+            throw "-Audio requested index $idx, but the source has $($srcAudio.Count) audio track(s) (0..$([math]::Max($srcAudio.Count - 1, 0)))."
         }
-    }
-    foreach ($ea in $extraAudioInfos) {
-        $title = Get-StreamTitle $ea.First
-        if (-not $title) { $title = $ea.Stem }
+        $s = $srcAudio[$idx]
         $audioOutputs += @{
-            Kind      = 'external'
-            InputIndex = $ea.InputIndex
-            SrcIndex  = 0
-            Lang      = (Get-StreamLanguage $ea.First)
-            Title     = $title
-            PlanLeft  = ('+ {0}' -f $ea.FileName)
+            Input = 0; Stream = $idx; Lang = (Get-StreamLanguage $s); Title = (Get-StreamTitle $s)
+            Plan  = ('{0}  {1} {2} {3}' -f $idx, (Get-StreamLanguage $s), (Get-ChannelLayoutLabel $s), $s.codec_name).Trim()
         }
     }
+    foreach ($p in $ExtraAudio) { $audioOutputs += Add-ExternalTrack -Path $p -Type 'audio' }
 
-    # Subtitle outputs + plan rows (image subs skipped; ass warned once).
+    # Subtitles: image-based ones are skipped (with a note), ASS/SSA warned once.
     $subOutputs = @()
     $subPlan = @()
-    $assWarned = $false
-    if (-not $subsSel.None) {
-        if ($subsSel.All) {
-            # Every internal TEXT subtitle; image-based ones silently excluded.
-            $subIdxList = @()
-            for ($i = 0; $i -lt $srcSubs.Count; $i++) {
-                if ($TextSubtitleCodecs -contains $srcSubs[$i].codec_name) { $subIdxList += $i }
-            }
-        } else {
-            $subIdxList = $subsSel.Indices
-        }
-
-        foreach ($idx in $subIdxList) {
-            $s = $srcSubs[$idx]
-            $codec = "$($s.codec_name)"
-            $isImage = -not ($TextSubtitleCodecs -contains $codec)
-            if ($isImage) {
-                Add-Note "Skipping subtitle $idx ($codec): image-based, not supported in MP4."
-                $subPlan += ('{0}  {1} {2}' -f $idx, (Get-StreamLanguage $s), $codec).Trim() + '  -> SKIPPED (image-based)'
-                continue
-            }
-            if (($codec -eq 'ass' -or $codec -eq 'ssa') -and -not $assWarned) {
-                Add-Note "Note: subtitle $idx is $($codec.ToUpper()) - styling and positioning will be lost in mov_text."
-                $assWarned = $true
-            }
-            $subOutputs += @{
-                Kind = 'internal'; InputIndex = 0; SrcIndex = $idx
-                Lang = (Get-StreamLanguage $s); Title = (Get-StreamTitle $s)
-            }
-            $subPlan += ('{0}  {1} {2}' -f $idx, (Get-StreamLanguage $s), $codec).Trim() + '  -> mov_text'
-        }
+    $subIdxList = $subsSel.Indices
+    if ($subsSel.All) {
+        # Every internal TEXT subtitle; image-based ones silently excluded.
+        $subIdxList = @(for ($i = 0; $i -lt $srcSubs.Count; $i++) {
+            if ($TextSubtitleCodecs -contains $srcSubs[$i].codec_name) { $i }
+        })
     }
-    foreach ($es in $extraSubInfos) {
-        $title = Get-StreamTitle $es.First
-        if (-not $title) { $title = $es.Stem }
-        $subOutputs += @{
-            Kind = 'external'; InputIndex = $es.InputIndex; SrcIndex = 0
-            Lang = (Get-StreamLanguage $es.First); Title = $title
+    $assWarned = $false
+    foreach ($idx in $subIdxList) {
+        if ($idx -ge $srcSubs.Count) {
+            throw "-Subtitles requested index $idx, but the source has $($srcSubs.Count) subtitle track(s) (0..$([math]::Max($srcSubs.Count - 1, 0)))."
         }
-        $subPlan += ('+ {0}  -> mov_text' -f $es.FileName)
+        $s = $srcSubs[$idx]
+        $codec = "$($s.codec_name)"
+        $left = ('{0}  {1} {2}' -f $idx, (Get-StreamLanguage $s), $codec).Trim()
+        if ($TextSubtitleCodecs -notcontains $codec) {
+            Add-Note "Skipping subtitle $idx ($codec): image-based, not supported in MP4."
+            $subPlan += "$left  -> SKIPPED (image-based)"
+            continue
+        }
+        if ($codec -in @('ass', 'ssa') -and -not $assWarned) {
+            Add-Note "Note: subtitle $idx is $($codec.ToUpper()) - styling and positioning will be lost in mov_text."
+            $assWarned = $true
+        }
+        $subOutputs += @{ Input = 0; Stream = $idx; Lang = (Get-StreamLanguage $s); Title = (Get-StreamTitle $s) }
+        $subPlan += "$left  -> mov_text"
+    }
+    foreach ($p in $ExtraSubtitles) {
+        $ext = [System.IO.Path]::GetExtension($p).ToLowerInvariant()
+        if ($ext -in @('.sup', '.idx', '.sub')) {
+            throw "external subtitle '$([System.IO.Path]::GetFileName($p))' is image-based ($ext); MP4/mov_text cannot carry it."
+        }
+        $t = Add-ExternalTrack -Path $p -Type 'subtitle'
+        $subOutputs += $t
+        $subPlan += "$($t.Plan)  -> mov_text"
     }
 
     # --- ffmpeg command (string[] splatted: filter_complex and Cyrillic paths
@@ -322,7 +228,7 @@ try {
     $ff = New-Object System.Collections.Generic.List[string]
     if ($Force) { $ff.Add('-y') }
 
-    foreach ($ip in $inputPaths) { $ff.Add('-i'); $ff.Add($ip) }
+    foreach ($ip in $InputPaths) { $ff.Add('-i'); $ff.Add($ip) }
 
     # Audio chain, one filter_complex branch per track. Order matters:
     if ($audioOutputs.Count -gt 0) {
@@ -338,26 +244,21 @@ try {
         $branches = @()
         for ($n = 0; $n -lt $audioOutputs.Count; $n++) {
             $o = $audioOutputs[$n]
-            $branches += ('[{0}:a:{1}]{2}[aout{3}]' -f $o.InputIndex, $o.SrcIndex, $audioChain, $n)
+            $branches += ('[{0}:a:{1}]{2}[aout{3}]' -f $o.Input, $o.Stream, $audioChain, $n)
         }
         $ff.Add('-filter_complex'); $ff.Add(($branches -join ';'))
     }
 
     # maps: video, audio, subtitles
     $ff.Add('-map'); $ff.Add('0:v:0')
-    if ($audioOutputs.Count -gt 0) {
-        for ($n = 0; $n -lt $audioOutputs.Count; $n++) { $ff.Add('-map'); $ff.Add("[aout$n]") }
-    }
-    foreach ($so in $subOutputs) {
-        if ($so.Kind -eq 'internal') { $ff.Add('-map'); $ff.Add("0:s:$($so.SrcIndex)") }
-        else { $ff.Add('-map'); $ff.Add("$($so.InputIndex):s:0") }
-    }
+    for ($n = 0; $n -lt $audioOutputs.Count; $n++) { $ff.Add('-map'); $ff.Add("[aout$n]") }
+    foreach ($o in $subOutputs) { $ff.Add('-map'); $ff.Add("$($o.Input):s:$($o.Stream)") }
 
     # Video filters: [deinterlace,] scale, [fps]. min() prevents upscaling.
     $sizeParts = $prof.Size -split 'x'
     $boxW = [int]$sizeParts[0]; $boxH = [int]$sizeParts[1]
     $scaleFilter = "scale='min(iw,$boxW)':'min(ih,$boxH)':force_original_aspect_ratio=decrease:force_divisible_by=2"
-    $srcFps = Get-FrameRateValue $video.r_frame_rate
+    $srcFps = Get-FrameRate $video
     $capped = ($null -ne $srcFps -and $srcFps -gt $MaxFrameRate)
 
     $vfStages = @()
@@ -386,15 +287,12 @@ try {
     if ($subOutputs.Count -gt 0)   { $ff.AddRange([string[]]@('-c:s', 'mov_text')) }
 
     # filter_complex drops source tags; copy them back. Absent tags emit no flag.
-    for ($n = 0; $n -lt $audioOutputs.Count; $n++) {
-        $o = $audioOutputs[$n]
-        if ($o.Lang)  { $ff.Add("-metadata:s:a:$n"); $ff.Add("language=$($o.Lang)") }
-        if ($o.Title) { $ff.Add("-metadata:s:a:$n"); $ff.Add("title=$($o.Title)") }
-    }
-    for ($n = 0; $n -lt $subOutputs.Count; $n++) {
-        $o = $subOutputs[$n]
-        if ($o.Lang)  { $ff.Add("-metadata:s:s:$n"); $ff.Add("language=$($o.Lang)") }
-        if ($o.Title) { $ff.Add("-metadata:s:s:$n"); $ff.Add("title=$($o.Title)") }
+    foreach ($kind in 'a', 's') {
+        $outs = @(if ($kind -eq 'a') { $audioOutputs } else { $subOutputs })
+        for ($n = 0; $n -lt $outs.Count; $n++) {
+            if ($outs[$n].Lang)  { $ff.Add("-metadata:s:${kind}:$n"); $ff.Add("language=$($outs[$n].Lang)") }
+            if ($outs[$n].Title) { $ff.Add("-metadata:s:${kind}:$n"); $ff.Add("title=$($outs[$n].Title)") }
+        }
     }
 
     # first output audio is default
@@ -436,7 +334,7 @@ try {
     } else {
         for ($n = 0; $n -lt $audioOutputs.Count; $n++) {
             $o = $audioOutputs[$n]
-            $line = "  $($o.PlanLeft.PadRight(18)) -> stereo, dialogue-enhanced, $AudioCodec $AudioBitrate"
+            $line = "  $($o.Plan.PadRight(18)) -> stereo, dialogue-enhanced, $AudioCodec $AudioBitrate"
             if ($n -eq 0) { $line += '  [default]' }
             $plan.Add($line)
         }

@@ -30,27 +30,6 @@ $ErrorActionPreference = 'Stop'
 # Report-formatting helpers (probe-specific)
 # ---------------------------------------------------------------------------
 
-function Format-FrameRate {
-    param([string]$RFrameRate)
-    if (-not $RFrameRate) { return $null }
-    $parts = $RFrameRate -split '/'
-    if ($parts.Count -ne 2) { return $null }
-    $den = [double]$parts[1]
-    if ($den -eq 0) { return $null }
-    $fps = [double]$parts[0] / $den
-    if ($fps -le 0) { return $null }
-    $rounded = [math]::Round($fps, 3)
-    return $rounded.ToString('0.###', [System.Globalization.CultureInfo]::InvariantCulture)
-}
-
-function Format-Duration {
-    param($Seconds)
-    $value = [double]$Seconds
-    if ($value -le 0) { return $null }
-    $ts = [System.TimeSpan]::FromSeconds([math]::Floor($value))
-    return ('{0}:{1:00}:{2:00}' -f [int][math]::Floor($ts.TotalHours), $ts.Minutes, $ts.Seconds)
-}
-
 function Format-Size {
     param($Bytes)
     $value = [double]$Bytes
@@ -112,13 +91,11 @@ try {
         if ($video.width -and $video.height) { $tokens += "$($video.width)x$($video.height)" }
         if ($video.codec_name) { $tokens += "$($video.codec_name)" }
 
-        $fps = Format-FrameRate $video.r_frame_rate
-        if ($fps) { $tokens += "$fps fps" }
+        $fps = Get-FrameRate $video
+        if ($fps) { $tokens += "$(Format-Fps $fps) fps" }
 
-        $durationRaw = $info.format.duration
-        if (-not $durationRaw) { $durationRaw = $video.duration }
-        $duration = Format-Duration $durationRaw
-        if ($duration) { $tokens += $duration }
+        $duration = Get-MediaDuration $info $video
+        if ($duration -gt 0) { $tokens += (Format-Hms $duration) }
 
         $size = Format-Size $info.format.size
         if ($size) { $tokens += $size }

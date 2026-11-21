@@ -115,6 +115,37 @@ function Get-ChannelLayoutLabel {
     }
 }
 
+# Frame rate from r_frame_rate ("24000/1001"); $null when unknown ("0/0").
+function Get-FrameRate {
+    param([Parameter(Mandatory)]$VideoStream)
+    $p = "$($VideoStream.r_frame_rate)" -split '/'
+    if ($p.Count -ne 2 -or [double]$p[1] -eq 0) { return $null }
+    $fps = [double]$p[0] / [double]$p[1]
+    if ($fps -le 0) { return $null }
+    return $fps
+}
+
+function Format-Fps {
+    param($Fps)
+    if ($null -eq $Fps) { return '?' }
+    return ([math]::Round($Fps, 3)).ToString('0.###', [System.Globalization.CultureInfo]::InvariantCulture)
+}
+
+# Seconds; the container's duration, else the video stream's, else 0.
+function Get-MediaDuration {
+    param([Parameter(Mandatory)]$MediaInfo, $VideoStream)
+    $raw = $MediaInfo.format.duration
+    if (-not $raw) { $raw = $VideoStream.duration }
+    return [double]$raw
+}
+
+# H:MM:SS
+function Format-Hms {
+    param([double]$Seconds)
+    $ts = [System.TimeSpan]::FromSeconds([math]::Floor([math]::Max(0, $Seconds)))
+    return ('{0}:{1:00}:{2:00}' -f [int][math]::Floor($ts.TotalHours), $ts.Minutes, $ts.Seconds)
+}
+
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
@@ -139,15 +170,17 @@ function Test-PathHasDirectory {
     return [bool]($Path -match '^[A-Za-z]:')
 }
 
-# -Directory (-OutputDirectory or $DefaultOutputDirectory) applies ONLY to a bare
-# filename; '.\out.mp4', 'sub\out.mp4', 'D:\x\out.mp4' are taken literally, so
-# '.\' means "here". A missing directory is an error, never a silent mkdir.
+# -Directory (the script's -OutputDirectory; falls back to $DefaultOutputDirectory)
+# applies ONLY to a bare filename; '.\out.mp4', 'sub\out.mp4', 'D:\x\out.mp4' are
+# taken literally, so '.\' means "here". A missing directory is an error, never
+# a silent mkdir.
 function Resolve-OutputPath {
     param(
         [Parameter(Mandatory)][string]$Path,
         [string]$Directory
     )
 
+    if (-not $Directory) { $Directory = $DefaultOutputDirectory }
     $base = $PWD.ProviderPath
 
     if ($Directory -and -not (Test-PathHasDirectory $Path)) {
@@ -159,6 +192,15 @@ function Resolve-OutputPath {
     }
 
     return [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($base, $Path))
+}
+
+# An existing output needs -Force on a real run; -DryRun still previews and gets
+# a note back (returned as a string) to show the user.
+function Assert-CanOverwrite {
+    param([Parameter(Mandatory)][string]$Path, [switch]$Force, [switch]$DryRun)
+    if ($Force -or -not (Test-Path -LiteralPath $Path)) { return }
+    if (-not $DryRun) { throw "output already exists: $Path (use -Force to overwrite)." }
+    return 'Note: output exists; a real run would need -Force to overwrite it.'
 }
 
 # ---------------------------------------------------------------------------
@@ -188,12 +230,6 @@ function Format-FFmpegCommand {
     if ($null -ne $current) { $lines.Add('  ' + $current) }
 
     return $lines.ToArray()
-}
-
-function Format-Hms {
-    param([double]$Seconds)
-    $ts = [System.TimeSpan]::FromSeconds([math]::Floor([math]::Max(0, $Seconds)))
-    return ('{0:00}:{1:00}:{2:00}' -f [int][math]::Floor($ts.TotalHours), $ts.Minutes, $ts.Seconds)
 }
 
 # -nostats/-loglevel silence ffmpeg's banner, stream dumps and statistics;
